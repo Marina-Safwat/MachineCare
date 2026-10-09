@@ -95,7 +95,7 @@ class Store:
             requests=[dict(r) for r in db.execute('SELECT r.*,u.username technician,p.name part FROM requests r JOIN users u ON u.id=r.technician_id JOIN parts p ON p.id=r.part_id ORDER BY r.id DESC') if r['machine_id'] in visible and (u['role']=='Administrator' or r['technician_id']==u['id'] or r['lead_id']==u['id'])]
             history=[dict(r) for r in db.execute('SELECT m.*,p.name part,u.username technician FROM maintenance m JOIN parts p ON p.id=m.part_id JOIN users u ON u.id=m.technician_id ORDER BY m.id DESC') if r['machine_id'] in visible]
             building_ids={m['building_id'] for m in machines}
-            return {'user':self.public_user(u),'machines':machines,'parts':[dict(r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':[dict(r) for r in db.execute('SELECT * FROM lines') if u['role']=='Administrator' or r['building_id'] in building_ids], 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[self.public_user(r) for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
+            return {'user':self.public_user(u),'machines':machines,'parts':[dict(r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':[dict(r) for r in db.execute('SELECT * FROM lines') if u['role']=='Administrator' or r['building_id'] in building_ids], 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[{**self.public_user(r),'building_ids':[a[0] for a in db.execute('SELECT building_id FROM access WHERE user_id=? ORDER BY building_id',(r['id'],))]} for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
     def execute(self,raw,action,d):
         with self.tx() as db:
             u=self.user(db,raw,action in ('password','logout'))
@@ -106,7 +106,7 @@ class Store:
                 if not password_ok(required(d,'current_password'),u['password']): raise Error('Current password is incorrect.')
                 db.execute('UPDATE users SET password=?,must_change=0,version=version+1 WHERE id=?',(password_hash(required(d,'new_password')),uid))
                 db.execute('DELETE FROM sessions WHERE user_id=?',(uid,)); return {'message':'Password changed. Sign in again.'}
-            if action in ('building','line','type','machine','part','user','reset','disable','receipt','adjust'):
+            if action in ('building','line','type','machine','part','user','edit_user','reset','disable','receipt','adjust'):
                 self.admin(u)
                 if action=='building':
                     values=(required(d,'code'),required(d,'name'))
@@ -137,6 +137,50 @@ class Store:
                     if lead and not db.execute("SELECT 1 FROM users WHERE id=? AND role='Lead' AND active=1",(lead,)).fetchone(): raise Error('Select an active lead.')
                     cur=db.execute('INSERT INTO users(username,password,role,lead_id) VALUES(?,?,?,?)',(required(d,'username'),password_hash(required(d,'password')),role,lead))
                     for b in set(d.get('building_ids',[])): db.execute('INSERT INTO access VALUES(?,?)',(cur.lastrowid,b))
+                elif action=='edit_user':
+                    target=integer(d,'user_id')
+                    if target==uid: raise Error('Another administrator must edit your own role or access.')
+                    previous=db.execute('SELECT * FROM users WHERE id=?',(target,)).fetchone()
+                    if not previous: raise Error('Account not found.',404)
+                    role=required(d,'role')
+                    if role not in ('Administrator','Lead','Technician'): raise Error('Invalid role.')
+                    buildings=d.get('building_ids')
+                    if not isinstance(buildings,list) or any(type(b)!=int or b<1 for b in buildings): raise Error('building_ids must be a list of positive building IDs.')
+                    buildings=set(buildings)
+                    for b in buildings:
+                        if not db.execute('SELECT 1 FROM buildings WHERE id=?',(b,)).fetchone(): raise Error('Selected building does not exist.')
+                    lead=d.get('lead_id')
+                    if lead is not None and (type(lead)!=int or lead<1): raise Error('Select a valid lead ID.')
+                    if lead==target: raise Error('An account cannot be its own assigned lead.')
+                    if role!='Technician' and lead is not None: raise Error('Lead assignments apply to Technician accounts.')
+                    if lead is not None:
+                        if not db.execute("SELECT 1 FROM users WHERE id=? AND role='Lead' AND active=1",(lead,)).fetchone(): raise Error('Select an active Lead account.')
+                        lead_buildings={a[0] for a in db.execute('SELECT building_id FROM access WHERE user_id=?',(lead,))}
+                        if not buildings<=lead_buildings: raise Error('The assigned lead needs access to all selected technician buildings.')
+                    assigned=db.execute('SELECT id FROM users WHERE lead_id=?',(target,)).fetchall()
+                    if assigned and role!='Lead': raise Error('Reassign this lead’s technicians before changing the lead’s role.')
+                    for technician in assigned:
+                        tech_buildings={a[0] for a in db.execute('SELECT building_id FROM access WHERE user_id=?',(technician['id'],))}
+                        if not tech_buildings<=buildings: raise Error('This lead still supervises technicians in the removed buildings. Reassign them first.')
+                    if role!='Lead' and db.execute("SELECT 1 FROM requests WHERE lead_id=? AND state='Pending'",(target,)).fetchone(): raise Error('Review or reassign pending approvals before changing this lead’s role.')
+                    pending=db.execute("SELECT r.id,l.building_id FROM requests r JOIN machines m ON m.id=r.machine_id JOIN lines l ON l.id=m.line_id WHERE r.technician_id=? AND r.state='Pending'",(target,)).fetchall()
+                    if pending and role!='Technician': raise Error('Finish or cancel this account’s pending early requests before changing its role.')
+                    if pending and (lead is None or any(r['building_id'] not in buildings for r in pending)): raise Error('Pending early requests need a lead and access to their machine buildings. Finish or cancel them first.')
+                    old_buildings={a[0] for a in db.execute('SELECT building_id FROM access WHERE user_id=?',(target,))}
+                    changed=previous['role']!=role or previous['lead_id']!=lead or old_buildings!=buildings
+                    if changed:
+                        db.execute('UPDATE users SET role=?,lead_id=?,version=version+1 WHERE id=?',(role,lead,target))
+                        db.execute('DELETE FROM access WHERE user_id=?',(target,))
+                        for b in sorted(buildings): db.execute('INSERT INTO access VALUES(?,?)',(target,b))
+                        db.execute('DELETE FROM sessions WHERE user_id=?',(target,))
+                        if previous['lead_id']!=lead:
+                            for r in pending:
+                                db.execute('UPDATE requests SET lead_id=? WHERE id=?',(lead,r['id']))
+                                db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(lead,f"Early replacement #{r['id']} reassigned to you for review.",now()))
+                                if previous['lead_id']:
+                                    db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(previous['lead_id'],f"Early replacement #{r['id']} reassigned to another lead.",now()))
+                    self.audit(db,uid,'edit_user',{'user_id':target,'before':{'role':previous['role'],'lead_id':previous['lead_id'],'building_ids':sorted(old_buildings)},'after':{'role':role,'lead_id':lead,'building_ids':sorted(buildings)},'pending_reassigned':[r['id'] for r in pending] if previous['lead_id']!=lead else []})
+                    return {'message':'Account updated. Changed permissions revoke existing sessions.' if changed else 'No changes.'}
                 elif action in ('reset','disable'):
                     target=integer(d,'user_id')
                     if target==uid: raise Error('Use your own password change; do not disable your current account.')

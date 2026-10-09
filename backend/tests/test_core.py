@@ -124,4 +124,48 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(len(api('/state',token=tech)['history']),2)
         finally: server.shutdown(); server.server_close(); thread.join()
 
+    def test_edit_account_updates_access_revokes_session_and_preserves_password(self):
+        self.act('admin','edit_user',user_id=3,role='Technician',lead_id=2,building_ids=[1])
+        with self.assertRaises(Error): self.store.state(self.tokens['tech'])
+        self.tokens['tech']=self.store.login('tech','Example-long-password-2026')['token']
+        state=self.store.state(self.tokens['tech'])
+        self.assertEqual({m['building_id'] for m in state['machines']},{1})
+        with self.assertRaises(Error): self.request(mid=3)
+        account=next(u for u in self.store.state(self.tokens['admin'])['users'] if u['id']==3)
+        self.assertEqual(account['building_ids'],[1])
+    def test_edit_account_rejects_nonadmin_and_self_changes(self):
+        with self.assertRaises(Error): self.act('tech','edit_user',user_id=4,role='Administrator',lead_id=None,building_ids=[])
+        with self.assertRaises(Error): self.act('admin','edit_user',user_id=1,role='Technician',lead_id=2,building_ids=[1])
+    def test_edit_account_validates_lead_and_building_ids_atomically(self):
+        for data in [dict(lead_id=3,building_ids=[1]),dict(lead_id=4,building_ids=[1]),dict(lead_id=True,building_ids=[1]),dict(lead_id=2,building_ids=[999]),dict(lead_id=2,building_ids=[True]),dict(lead_id=2,building_ids=[2])]:
+            with self.assertRaises(Error): self.act('admin','edit_user',user_id=3,role='Technician',**data)
+        self.assertEqual(self.store.state(self.tokens['tech'])['user']['lead_id'],2)
+    def test_edit_lead_cannot_orphan_assigned_technicians(self):
+        with self.assertRaises(Error): self.act('admin','edit_user',user_id=2,role='Administrator',lead_id=None,building_ids=[1,3])
+        with self.assertRaises(Error): self.act('admin','edit_user',user_id=2,role='Lead',lead_id=None,building_ids=[1])
+    def test_edit_account_noop_keeps_session(self):
+        self.act('admin','edit_user',user_id=3,role='Technician',lead_id=2,building_ids=[3,1,1])
+        self.assertEqual(self.store.state(self.tokens['tech'])['user']['id'],3)
+    def test_edit_account_reassigns_pending_early_work_preserves_history(self):
+        self.act('admin','edit_user',user_id=4,role='Lead',lead_id=None,building_ids=[1,3])
+        first=self.request(); self.act('tech','complete',request_id=first['id'])
+        early=self.request(key='reassignment',early_explanation='Failed seal')
+        self.act('admin','edit_user',user_id=3,role='Technician',lead_id=4,building_ids=[1,3])
+        with self.assertRaises(Error): self.act('lead','review',request_id=early['id'],decision='Approved',comment='Old lead')
+        self.tokens['other']=self.store.login('other','Example-long-password-2026')['token']
+        state=self.store.state(self.tokens['other'])
+        self.assertEqual(next(r for r in state['requests'] if r['id']==early['id'])['lead_id'],4)
+        self.assertTrue(any('reassigned' in n['message'] for n in state['notifications']))
+        self.act('other','review',request_id=early['id'],decision='Approved',comment='New assigned lead')
+        self.tokens['tech']=self.store.login('tech','Example-long-password-2026')['token']
+        self.act('tech','complete',request_id=early['id'])
+        self.assertEqual(len(self.store.state(self.tokens['tech'])['history']),2)
+        with self.store.tx() as db:
+            self.assertTrue(db.execute("SELECT 1 FROM audit WHERE action='edit_user'").fetchone())
+    def test_edit_account_blocks_orphaning_pending_requests(self):
+        first=self.request(); self.act('tech','complete',request_id=first['id'])
+        self.request(key='pending',early_explanation='Premature wear')
+        with self.assertRaises(Error): self.act('admin','edit_user',user_id=3,role='Technician',lead_id=None,building_ids=[1,3])
+        with self.assertRaises(Error): self.act('admin','edit_user',user_id=3,role='Lead',lead_id=None,building_ids=[1,3])
+
 if __name__=='__main__': unittest.main()
