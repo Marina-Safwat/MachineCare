@@ -1,40 +1,34 @@
-# Step 2: Building and production-line permissions
+# Update 3: Machine-type and part-detail editing
 
-This cumulative update includes account editing, equipment filters and the dialog-lifecycle fix.
+This is a cumulative update: it includes account editing, building/line access, equipment filters and the dialog controller fix.
 
-## What is new
+## New actions
 
-Create/edit an account with access to whole buildings, individual production lines, or a mixture. Line checkboxes appear under each building. Do not select a whole-building checkbox when you intend to restrict that user to selected lines in that building.
+- Administrator -> Administration -> Machine types -> pencil: rename a type.
+- Administrator -> Inventory -> Edit details: change a part's name, SKU, supplier, supplier part number, bin, cost, expected replacement interval, reorder threshold/target, supplier lead time and compatible machine types.
+- Inventory -> Add part now uses labeled fields and compatibility checkboxes instead of typing type IDs.
 
-Examples:
+Part edits require a reason and are recorded with before/after details in the audit database. This update does not add an audit-log viewer.
 
-- B01 whole building -> all B01 lines, including lines created later.
-- B01 L01 only -> L01 machines; no access to B01 L02 or future sibling lines.
-- B01 whole building + B03 L02 -> all B01 lines and only B03 L02.
-- Administrator -> all equipment, regardless of stored selections.
-- Nothing selected -> no equipment access (shared parts metadata remains visible).
+## Install
 
-A selected line does not imply a whole-building grant. Its parent building is displayed only so the equipment explorer can show the hierarchy. Individual line grants follow stable line IDs if a line is renamed. They follow that line if moved between buildings, but a move that breaks lead/technician coverage is blocked.
+1. Stop Flutter with `q`; stop the backend with Ctrl+C.
+2. Back up your code and backend/machinecare.db while the backend is stopped. Keep backups outside app/lib.
+3. Copy this package's files to the matching folders under F:\work\machinecare_flutter:
 
-Lead coverage must match technicians' scopes. A lead with only today's individual lines cannot supervise a technician granted the whole building: whole-building access also includes future lines. Grant the lead that whole building or narrow the technician to explicit lines.
-
-## Install on your Windows laptop
-
-1. Stop Flutter with `q` and the backend with Ctrl+C.
-2. Back up your app and `backend/machinecare.db` while the backend is stopped. Keep backups outside app/lib.
-3. Copy these package files to the matching locations under `F:\work\machinecare_flutter`:
-
-| Package file | Destination |
+| File | Purpose |
 |---|---|
-| backend/core.py | backend/core.py |
-| backend/access_policy.py | backend/access_policy.py (new) |
-| backend/schema.sql | backend/schema.sql |
-| backend/migrations/002_line_access.sql | backend/migrations/002_line_access.sql (new folder/file) |
-| app/lib/workspace.dart | app/lib/workspace.dart |
-| backend/tests/test_core.py | backend/tests/test_core.py |
-| app/test/*.dart | app/test/ (keep your existing login test) |
+| backend/core.py | Updated domain actions and migration runner |
+| backend/access_policy.py | Building/line permission rules |
+| backend/catalog.py | New catalog validation module |
+| backend/schema.sql | Baseline schema |
+| backend/migrations/002_line_access.sql | Earlier additive line-access upgrade |
+| backend/migrations/003_catalog_revision.sql | New catalog-version upgrade |
+| backend/tests/test_core.py | Updated full backend suite |
+| app/lib/workspace.dart | Both editors plus previous frontend updates |
+| app/test/*.dart | Updated/new widget tests; keep your existing login test |
 
-Copy every backend file above before restarting. The migration is required; do not copy only core.py. Do NOT delete your database or run init/seed again.
+Copy every required backend file, including the migrations folder. Do not delete the database, reinitialize the administrator or reseed.
 
 4. Run checks:
 
@@ -46,7 +40,7 @@ flutter analyze
 flutter test
 ```
 
-If your C: drive remains short of space, set the temporary folder in this Flutter terminal before those Flutter commands:
+If the C: drive is still short of space, set these in the Flutter terminal before testing/running:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path F:\FlutterTemp
@@ -54,7 +48,7 @@ $env:TEMP = 'F:\FlutterTemp'
 $env:TMP = 'F:\FlutterTemp'
 ```
 
-5. Start the backend in one terminal:
+5. Restart the backend:
 
 ```powershell
 cd F:\work\machinecare_flutter\backend
@@ -62,35 +56,42 @@ $env:MACHINECARE_ORIGIN = 'http://localhost:18080'
 python server.py run
 ```
 
-Its first start upgrades database version 1 to 2 by adding the line_access table. Existing accounts, passwords, stock, history and whole-building grants are preserved. Repeated starts do not erase line grants or reset the schema version.
+The backend upgrades schema version 1 or 2 to version 3 automatically, preserving existing accounts, line grants, equipment, stock and maintenance. Version 3 adds revision counters for machine types and parts; no inventory balances are modified.
 
-6. Start Flutter in another terminal:
+6. Restart Flutter in another terminal:
 
 ```powershell
 cd F:\work\machinecare_flutter\app
 flutter run -d chrome --web-hostname localhost --web-port 18080 --dart-define=API_URL=http://127.0.0.1:8000
 ```
 
-## Use
+## Important rules
 
-Administrator -> Administration -> Accounts -> pencil icon -> Building and production-line access. Uncheck the whole building, then check only the intended lines. Save. The employee must sign in again after permission changes. New accounts use the same checkboxes plus a temporary password and role/lead dropdowns.
+- Editing part metadata cannot set stock. Use Receive or Adjust for inventory quantities.
+- SKU edits keep the same part ID, compatibility links, inventory and maintenance references. New/edit SKUs are trimmed and stored uppercase; duplicates are checked without case sensitivity.
+- Machine-type names are unique without case sensitivity. Renaming preserves IDs and machine/part relationships.
+- Unit cost is nonnegative and supports at most two decimal places. Target stock must be at least the reorder threshold. Expected interval must be positive.
+- Every part must have at least one compatible machine type.
+- Compatibility required by Pending or Approved requests cannot be removed. Finish or cancel those requests first. Completed history never blocks a compatibility update and is never deleted.
+- Historical maintenance stores quantity, unit cost, replacement time, technician and location. Metadata edits do not rewrite these records. Part names shown beside old history are the current catalog names; historical machine-location labels remain the captured labels.
+- Future completed work captures the price configured at completion, not necessarily at request submission. Existing completed costs do not change.
+- Increasing expected life can make already-approved normal work early. The backend checks again at completion and may require cancellation/resubmission for lead approval. Reducing expected life does not auto-approve existing pending requests. Overdue metrics use the currently configured interval.
+- One shared balance/bin per SKU remains the pilot inventory model. Changing the bin changes the catalog location label; no stock movement, receipt or physical relocation is automatically performed.
+- Catalog edits include a revision number. If another admin saves first, stale saves are blocked instead of overwriting their changes. Close/reopen the editor to reload; note your intended changes before doing so.
+- Permission checks remain server-side. Leads and technicians cannot edit catalog details even by calling the API directly.
 
-Pending early requests must retain technician access and an assigned lead with matching coverage; contradictory edits fail atomically. Lead assignment changes still transfer pending requests to the new lead. Completed history is retained. Requests, equipment and history are filtered by the user's current equipment access; machine moves can change who can see that machine's old history.
+## Actual verification
 
-Previously approved work can become inaccessible when permissions are narrowed or equipment moves. Restore access to complete it, or have an administrator cancel obsolete work. The update does not introduce approved-work reassignment or reservation features.
+51 backend tests passed in 34.004 seconds on Python 3.12.14. This includes 37 existing tests and 14 new catalog tests. Python syntax compilation passed. Raw final output is TEST_RESULTS.txt.
 
-## Verification results
+New tests cover renamed type relationships/history, permission checks, duplicates, stale/conflicting metadata updates, stock/ledger/history preservation, future versus historical costs, active compatibility safeguards, shared stock after new compatibility, receipts during metadata edits, changed expected intervals, v2->v3 migration and repeated starts.
 
-37 backend tests passed in 25.647 seconds on Python 3.12.14. This includes the prior 23 tests and 14 new line-access tests. Python syntax compilation passed for core.py and access_policy.py. See TEST_RESULTS.txt.
-
-Tests cover v1 migration preserving data/permissions, migration reruns preserving line grants, forbidden sibling-line API calls, whole-building access to future lines, explicit-line isolation, lead scope coverage, account creation, revocation, invalid scopes, pending request safeguards, historical visibility and line/machine moves.
-
-Flutter is unavailable in the delivery environment. The supplied widget tests for account selection/creation and dialog lifecycles are NOT executed here. Run flutter analyze/flutter test and the manual scenarios below on your laptop.
+Flutter is not installed in the delivery environment. Supplied widget tests are NOT executed here. Run flutter analyze/flutter test and VERIFY_SCENARIOS.md locally. Backend coverage does not substitute for frontend verification or production security review.
 
 ## Rollback
 
-If required, stop both services and restore the complete pre-update code AND its database backup together. Do not downgrade only the code: old versions do not enforce individual-line permissions. Restoration also reverts work recorded since that backup. Never restore over a running database.
+Stop both services and restore the complete pre-update code and matching stopped-database backup together. Restoring only old code can remove line permission enforcement. Restoring a backup reverts changes recorded since the backup. Never overwrite a live database.
 
-## Next feature
+## Next pair
 
-Machine-type and part-detail editing. Reordering/partial receipts follow that step.
+Reorder requests/approvals and partial deliveries, with atomic receiving and duplicate prevention.

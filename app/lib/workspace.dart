@@ -175,12 +175,21 @@ class _WorkspaceState extends State<Workspace> {
   }
   Widget inventory() => Column(children: [
     if (admin) Align(alignment: Alignment.centerRight, child: FilledButton.icon(onPressed: addPart, icon: const Icon(Icons.add), label: const Text('Add part'))),
-    for (final p in rows(state, 'parts')) panel('${p['name']} · ${p['sku']}', [Text('Shared stock: ${p['stock']} • Bin: ${p['bin']}'), Text('Threshold ${p['threshold']} • Target ${p['target']} • Expected life ${p['interval_days']} days'), Text('Unit cost \$${(p['cost'] as num).toStringAsFixed(2)} • Supplier: ${p['supplier']}'), if (p['stock'] <= p['threshold']) const Text('LOW STOCK • reorder planning required', style: TextStyle(color: Colors.deepOrange)), if (admin) Wrap(spacing: 10, children: [TextButton(onPressed: () => form('Receive stock', 'receipt', [['quantity', 'Received quantity', 'int'], ['reason', 'Receipt reference / reason']], extra: {'part_id': p['id'], 'operation_key': 'receipt:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Receive')), TextButton(onPressed: () => form('Adjust inventory', 'adjust', [['delta', 'Signed adjustment (+ / −)', 'int'], ['reason', 'Required adjustment reason']], extra: {'part_id': p['id'], 'operation_key': 'adjust:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Adjust'))])]),
+    for (final p in rows(state, 'parts')) panel('${p['name']} · ${p['sku']}', [Text('Shared stock: ${p['stock']} • Bin: ${p['bin']}'), Text('Threshold ${p['threshold']} • Target ${p['target']} • Expected life ${p['interval_days']} days'), Text('Unit cost \$${(p['cost'] as num).toStringAsFixed(2)} • Supplier: ${p['supplier']}'), if (p['stock'] <= p['threshold']) const Text('LOW STOCK • reorder planning required', style: TextStyle(color: Colors.deepOrange)), if (admin) Wrap(spacing: 10, children: [TextButton.icon(onPressed: () => editPart(p), icon: const Icon(Icons.edit_outlined), label: const Text('Edit details')), TextButton(onPressed: () => form('Receive stock', 'receipt', [['quantity', 'Received quantity', 'int'], ['reason', 'Receipt reference / reason']], extra: {'part_id': p['id'], 'operation_key': 'receipt:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Receive')), TextButton(onPressed: () => form('Adjust inventory', 'adjust', [['delta', 'Signed adjustment (+ / −)', 'int'], ['reason', 'Required adjustment reason']], extra: {'part_id': p['id'], 'operation_key': 'adjust:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Adjust'))])]),
   ]);
-  Future<void> addPart() async {
-    final ts = rows(state, 'types'); if (ts.isEmpty) return;
-    // One SKU shares physical stock across all selected type IDs.
-    await form('Add compatible part', 'part', [['type_ids', 'Compatible type IDs (comma separated)', 'text', '${ts.first['id']}'], ['sku', 'Unique SKU'], ['name', 'Part name'], ['bin', 'Storage bin'], ['supplier', 'Supplier', 'optional'], ['supplier_number', 'Supplier part number', 'optional'], ['cost', 'Unit cost', 'decimal', '0'], ['stock', 'Opening stock', 'int', '0'], ['threshold', 'Reorder threshold', 'int', '0'], ['target', 'Target stock', 'int', '10'], ['lead_days', 'Supplier lead days', 'int', '0'], ['interval_days', 'Expected replacement days', 'int', '90']], intro: 'Machine types: ${ts.map((t) => "${t['id']} = ${t['name']}").join(', ')}. Stock is shared across compatible types.');
+  Future<void> addPart() => editPart(null);
+  Future<void> editPart(Map<String, dynamic>? part) async {
+    final types = rows(state, 'types');
+    if (types.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Create a machine type before adding parts.')));
+      return;
+    }
+    await showDialog<bool>(context: context, builder: (_) => PartEditor(
+      part: part, types: types,
+      onSave: (data) async { await widget.api.action(part == null ? 'part' : 'edit_part', data); },
+    ));
+    if (!mounted) return;
+    await refresh();
   }
   Widget approvals() => Column(children: [if (rows(state, 'requests').isEmpty) const Text('No replacement requests.'), for (final r in rows(state, 'requests')) panel('#${r['id']} · ${r['part']}', [Wrap(spacing: 8, children: [pill(r['state'] as String), if (r['early'] == 1) pill('Early replacement')]), Text('Machine #${r['machine_id']} • Qty ${r['quantity']} • ${r['technician']}'), Text(r['reason'] as String), Text(r['notes'] as String), if (r['review_comment'] != null) Text('Lead comment: ${r['review_comment']}'), Wrap(spacing: 10, children: [if (r['state'] == 'Pending' && r['lead_id'] == state['user']['id']) ...[FilledButton(onPressed: () => review(r, 'Approved'), child: const Text('Approve')), OutlinedButton(onPressed: () => review(r, 'Rejected'), child: const Text('Reject'))], if (r['state'] == 'Approved' && r['technician_id'] == state['user']['id']) FilledButton(onPressed: () => confirmComplete(r), child: const Text('Record physical completion')), if (['Pending', 'Approved'].contains(r['state']) && (admin || r['technician_id'] == state['user']['id'])) TextButton(onPressed: () => act('cancel', {'request_id': r['id']}), child: const Text('Cancel request'))])])]);
   Future<void> review(Map<String, dynamic> r, String decision) => form('$decision request #${r['id']}', 'review', [['comment', 'Lead review comment']], extra: {'request_id': r['id'], 'decision': decision});
@@ -193,7 +202,7 @@ class _WorkspaceState extends State<Workspace> {
     if (!admin) return const Text('Administrator permission required.');
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       panel('Buildings & lines', [Wrap(spacing: 12, children: [FilledButton.tonal(onPressed: () => form('Create building', 'building', [['code', 'Building code'], ['name', 'Building name']]), child: const Text('Add building')), FilledButton.tonal(onPressed: () => form('Create line', 'line', [['building_id', 'Building ID', 'int'], ['code', 'Line code'], ['description', 'Description (optional)', 'optional']]), child: const Text('Add line'))]), for (final b in rows(state, 'buildings')) ListTile(title: Text('#${b['id']} ${b['code']} · ${b['name']}'), trailing: IconButton(tooltip: 'Edit building', icon: const Icon(Icons.edit_outlined), onPressed: () => form('Edit building', 'building', [['code', 'Code', 'text', b['code'] as String], ['name', 'Name', 'text', b['name'] as String]], extra: {'id': b['id']}))), for (final l in rows(state, 'lines')) ListTile(title: Text('Line #${l['id']} • Building ${l['building_id']} • ${l['code']}'), subtitle: Text(l['description'] as String), trailing: IconButton(tooltip: 'Edit line', icon: const Icon(Icons.edit_outlined), onPressed: () => form('Edit line', 'line', [['building_id', 'Building ID', 'int', '${l['building_id']}'], ['code', 'Code', 'text', l['code'] as String], ['description', 'Description (optional)', 'optional', l['description'] as String]], extra: {'id': l['id']})))]),
-      panel('Machine types', [FilledButton.tonal(onPressed: () => form('Add machine type', 'type', [['name', 'Machine type name']]), child: const Text('Add type')), for (final t in rows(state, 'types')) Text('#${t['id']} ${t['name']}')]),
+      panel('Machine types', [FilledButton.tonal(onPressed: () => form('Add machine type', 'type', [['name', 'Machine type name']]), child: const Text('Add type')), for (final t in rows(state, 'types')) ListTile(title: Text(t['name'] as String), subtitle: Text('Type ID ${t['id']}'), trailing: IconButton(tooltip: 'Rename machine type', icon: const Icon(Icons.edit_outlined), onPressed: () => form('Rename machine type', 'type', [['name', 'Machine type name', 'text', t['name'] as String]], extra: {'id': t['id'], 'revision': t['revision'] ?? 0}, intro: 'Machine assignments and compatible parts keep their existing links. Recorded maintenance locations keep their original names.'))) ]),
       panel('Equipment registry', [FilledButton.tonal(onPressed: () => editMachine(null), child: const Text('Register machine')), for (final m in rows(state, 'machines')) ListTile(title: Text(m['name'] as String), subtitle: Text('Machine ID ${m['id']}'), trailing: IconButton(tooltip: 'Edit, move or retire machine', icon: const Icon(Icons.edit_outlined), onPressed: () => editMachine(m)))]),
       panel('Accounts', [FilledButton.tonal(onPressed: createUser, child: const Text('Create employee account')), for (final u in rows(state, 'users')) ListTile(title: Text('${u['username']} · ${u['role']}'), subtitle: Text('ID ${u['id']} • Lead ${u['lead_id'] ?? 'unassigned'} • ${u['active'] == 1 ? 'Active' : 'Disabled'}'), trailing: u['id'] == state['user']['id'] ? null : Wrap(children: [IconButton(tooltip: 'Edit role, lead, building and line access', icon: const Icon(Icons.edit_outlined), onPressed: () => editUser(u)), IconButton(tooltip: 'Reset password', icon: const Icon(Icons.key), onPressed: () => form('Reset employee password', 'reset', [['password', 'Temporary password (12+ characters)']], extra: {'user_id': u['id']})), IconButton(tooltip: u['active'] == 1 ? 'Disable' : 'Enable', icon: Icon(u['active'] == 1 ? Icons.block : Icons.check_circle_outline), onPressed: () => act('disable', {'user_id': u['id'], 'active': u['active'] == 1 ? 0 : 1}))]))]),
     ]);
@@ -303,4 +312,78 @@ class _AccountEditorState extends State<AccountEditor> {
       actions: [TextButton(onPressed: busy ? null : () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: busy ? null : save, child: Text(busy ? 'Saving…' : widget.creating ? 'Create account' : 'Save account'))],
     );
   }
+}
+
+class PartEditor extends StatefulWidget {
+  final Map<String, dynamic>? part;
+  final List<Map<String, dynamic>> types;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const PartEditor({super.key, this.part, required this.types, required this.onSave});
+  @override State<PartEditor> createState() => _PartEditorState();
+}
+class _PartEditorState extends State<PartEditor> {
+  static const labels = <String, String>{
+    'name': 'Part name', 'sku': 'Unique SKU', 'bin': 'Storage bin',
+    'supplier': 'Supplier (optional)', 'supplier_number': 'Supplier part number (optional)',
+    'cost': 'Unit cost', 'threshold': 'Reorder threshold', 'target': 'Target stock',
+    'lead_days': 'Supplier lead time (days)', 'interval_days': 'Expected replacement interval (days)',
+  };
+  late Map<String, TextEditingController> controllers;
+  late Set<int> selectedTypes;
+  bool busy = false;
+  String? error;
+  bool get creating => widget.part == null;
+  @override void initState() {
+    super.initState();
+    final defaults = <String, dynamic>{'name': '', 'sku': '', 'bin': '', 'supplier': '', 'supplier_number': '', 'cost': 0, 'threshold': 0, 'target': 10, 'lead_days': 0, 'interval_days': 90, 'stock': 0, 'change_reason': ''};
+    final values = {...defaults, ...?widget.part};
+    controllers = {for (final key in [...labels.keys, if (creating) 'stock' else 'change_reason']) key: TextEditingController(text: '${values[key]}')};
+    selectedTypes = (widget.part?['type_ids'] as List? ?? []).cast<int>().toSet();
+  }
+  @override void dispose() {
+    for (final controller in controllers.values) { controller.dispose(); }
+    super.dispose();
+  }
+  Future<void> save() async {
+    setState(() { busy = true; error = null; });
+    try {
+      final data = <String, dynamic>{};
+      for (final key in controllers.keys) {
+        final text = controllers[key]!.text.trim();
+        if (['supplier', 'supplier_number'].contains(key)) { data[key] = text; continue; }
+        if (text.isEmpty) throw Exception('${labels[key] ?? (key == 'stock' ? 'Opening stock' : 'Change reason')} is required.');
+        if (['threshold', 'target', 'lead_days', 'interval_days', 'stock'].contains(key)) {
+          final value = int.tryParse(text);
+          if (value == null || value < (key == 'interval_days' ? 1 : 0)) throw Exception('${labels[key] ?? 'Opening stock'} must be a valid whole number.');
+          data[key] = value;
+        } else if (key == 'cost') {
+          final value = double.tryParse(text);
+          if (value == null || !value.isFinite || value < 0) throw Exception('Enter a valid nonnegative unit cost.');
+          data[key] = value;
+        } else { data[key] = text; }
+      }
+      if (selectedTypes.isEmpty) throw Exception('Select at least one compatible machine type.');
+      if ((data['target'] as int) < (data['threshold'] as int)) throw Exception('Target stock must be at least the reorder threshold.');
+      data['type_ids'] = selectedTypes.toList()..sort();
+      if (!creating) { data['part_id'] = widget.part!['id']; data['revision'] = widget.part!['revision'] ?? 0; }
+      await widget.onSave(data);
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) { if (mounted) setState(() => error = cleanError(e)); }
+    finally { if (mounted) setState(() => busy = false); }
+  }
+  @override Widget build(BuildContext context) => AlertDialog(
+    title: Text(creating ? 'Add compatible part' : 'Edit part · ${widget.part!['name']}'),
+    content: SizedBox(width: 560, child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+      if (!creating) Text('Shared stock: ${widget.part!['stock']}. Use Receive or Adjust to change quantity. Completed replacement costs stay unchanged.'),
+      for (final entry in labels.entries) Padding(padding: const EdgeInsets.only(top: 14), child: TextField(controller: controllers[entry.key], enabled: !busy, keyboardType: ['cost', 'threshold', 'target', 'lead_days', 'interval_days'].contains(entry.key) ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text, decoration: InputDecoration(labelText: entry.value))),
+      const SizedBox(height: 18),
+      const Text('Compatible machine types', style: TextStyle(fontWeight: FontWeight.bold)),
+      const Text('One physical stock balance is shared across these types.'),
+      for (final type in widget.types) CheckboxListTile(key: ValueKey('part-type:${type['id']}'), contentPadding: EdgeInsets.zero, title: Text(type['name'] as String), value: selectedTypes.contains(type['id']), onChanged: busy ? null : (checked) => setState(() { if (checked == true) { selectedTypes.add(type['id'] as int); } else { selectedTypes.remove(type['id']); } })),
+      const SizedBox(height: 10),
+      TextField(controller: controllers[creating ? 'stock' : 'change_reason'], enabled: !busy, keyboardType: creating ? TextInputType.number : TextInputType.text, decoration: InputDecoration(labelText: creating ? 'Opening stock' : 'Change reason (required)')),
+      if (error != null) Padding(padding: const EdgeInsets.only(top: 16), child: Text(error!, style: const TextStyle(color: Colors.red))),
+    ]))),
+    actions: [TextButton(onPressed: busy ? null : () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: busy ? null : save, child: Text(busy ? 'Saving…' : creating ? 'Add part' : 'Save details'))],
+  );
 }

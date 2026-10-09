@@ -1,25 +1,38 @@
-# Manual acceptance scenarios
+# Two-feature acceptance scenarios
 
-Use sample accounts and sample inventory. Start as Administrator. Lead A should have B01 whole-building access; create Technician A assigned to it.
+Use sample equipment and temporary accounts. Record your starting stock and history before editing. Perform catalog edits as Administrator.
+
+## Machine-type editing
 
 | Scenario | Action | Expected |
 |---|---|---|
-| Existing rights | Upgrade and sign in as an existing employee | Previous whole-building equipment remains visible |
-| Single line | Edit Technician A; uncheck B01 whole building; check only B01 L01 | After signing in again, only L01 appears; L02 does not appear in line filters |
-| Parent visibility | Inspect equipment hierarchy as Technician A | B01 appears as the parent; this does not grant L02 access |
-| Whole building | Grant Technician A B01 whole building | After signing in again, all B01 lines appear |
-| Future line | As admin add B01 L03 | A whole-building employee sees L03 in line choices; a L01-only employee does not |
-| Mixed scope | Grant B01 whole building and one B03 line | Only that B03 line plus every B01 line is accessible; assigned lead must cover both |
-| Lead mismatch | Narrow lead to L01, try granting its technician L02 | Edit is blocked; previous settings remain |
-| Future coverage | Lead gets explicit L01/L02; try granting technician whole B01 | Edit is blocked, since the lead lacks whole-building/future-line coverage |
-| Pending work | Create early pending request on L01; try removing technician's L01 access | Save is blocked until work is reviewed/completed or cancelled appropriately |
-| Lead access removal | Lead supervises L01 technician; try removing lead's L01 access | Save is blocked until technician is reassigned or restricted |
-| History visibility | Complete work on L02, then restrict employee to L01 | Employee no longer sees L02 history; administrator still sees it |
-| Session revocation | Keep employee signed in; admin changes line selection | Employee's next Refresh/action requires sign-in; new sign-in uses new scope |
-| Create account | Create employee with only L02, complete first-password change | Only L02 equipment is available |
-| No access | Create unassigned technician with no scopes | No machines/lines appear; no direct machine actions allowed |
-| Cancel edit | Change line selections, then Cancel | Previous scope persists |
-| Restart | Save L01-only access, restart services | Scope remains L01-only |
-| Prior regression | Search/filter machines and open/cancel/reopen replacement form | Filters and dialog fix continue working |
+| Rename a used type | Rename DIMM Press to Precision DIMM Press | Equipment names and type filters use new name; machines keep their type ID |
+| Compatibility | Open the same machine after renaming | Existing compatible parts remain attached |
+| History | Complete work before renaming; then inspect History | Saved location snapshot retains original type name and the replacement date/cost |
+| Duplicate name | Rename to another existing type, including different letter case | Specific error; original type unchanged; entered text preserved |
+| Blank name | Clear type name and Save | Required-field error; original type unchanged |
+| Cancel | Change type name then Cancel | No rename |
+| Concurrent admins | Two admins open same type; admin A saves; admin B saves stale form | B gets conflict message; A's rename remains |
+| Restricted roles | Sign in as Lead/Technician | No catalog-edit controls; backend rejects unauthorized actions |
 
-Document unexpected results with scenario name, role, selected building/line, error text and expected/actual behavior. Do not send passwords.
+## Part-detail editing
+
+| Scenario | Action | Expected |
+|---|---|---|
+| Metadata | Change supplier, supplier part number, bin and lead time with a reason | Updated details appear after saving and reopening |
+| Stock unchanged | Change name/SKU/cost; compare quantity and ledger | Same stock; metadata change does not create a stock transaction |
+| Historical cost | Complete work at 24.50; edit current price to 55.25 | Old replacement remains 24.50 per unit; future completion records 55.25 |
+| Stable part identity | Rename name/SKU and open machine history | Same part ID; replacement dates/history remain linked |
+| Duplicate SKU | Enter another part's SKU, including different letter case | Specific duplicate error; data unchanged; form values preserved |
+| Invalid fields | Negative cost, 3-decimal cost, blank name/bin, 0-day expected life, or target below threshold | Save blocked with explanatory error |
+| Missing reason | Edit details and omit change reason | Save blocked; input retained |
+| Compatibility add | Add another compatible machine type | Same SKU/shared stock appears on its machines; no duplicated physical balance |
+| Compatibility remove | Remove a type with no active replacement requests | Part stops appearing on that type's machines; completed history persists |
+| Active work safeguard | Create Approved or Pending request; remove its machine type from the part | Edit blocked, listing request IDs; finish/cancel work first |
+| Concurrent edits | Two admins open same part; A saves then B attempts stale save | B gets conflict; A's changes are not overwritten |
+| Stock received during edit | Open part editor; receive stock from another session; then save metadata | Receipt quantity remains; old displayed stock is not written back |
+| Interval change | Normal request is approved at old lifetime; increase lifetime so it becomes early | Completion blocked; cancel and submit with explanation for lead review |
+| Cancel/reopen | Type changes, Cancel, open editor again | Saved original values load; no controller-disposal error |
+| Persistence | Save edits, restart both services, sign in again | Edited details, history and line permissions remain |
+
+Also verify previous account editing, whole-building vs individual-line access, equipment filters, first-password changes and replacement approvals/completion. Report failed scenario, role, expected/actual result and exact error text. Never send passwords.

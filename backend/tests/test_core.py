@@ -245,19 +245,19 @@ class WorkflowTests(unittest.TestCase):
         r=self.request();self.act('tech','complete',request_id=r['id'])
         before=self.store.state(self.tokens['admin'])
         with self.store.tx() as db:
-            db.execute('DROP TABLE line_access');db.execute('PRAGMA user_version=1')
+            db.execute('DROP TABLE line_access');db.execute('ALTER TABLE parts DROP COLUMN revision');db.execute('ALTER TABLE types DROP COLUMN revision');db.execute('PRAGMA user_version=1')
         reopened=Store(self.store.path)
         after=reopened.state(self.tokens['admin'])
         self.assertEqual(after['history'],before['history'])
         self.assertEqual(after['parts'],before['parts'])
         self.assertEqual(after['users'],before['users'])
         self.assertEqual(len(reopened.state(self.tokens['tech'])['machines']),4)
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],2)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],3)
     def test_migration_rerun_keeps_line_grants_and_version(self):
         self.line_only()
         reopened=Store(self.store.path)
         self.assertEqual(reopened.state(self.tokens['tech'])['user']['line_ids'],[1])
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],2)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],3)
     def test_http_forbidden_line_request_is_rejected(self):
         self.line_only()
         server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -266,6 +266,125 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaises(HTTPError) as result:urlopen(req)
             self.assertEqual(result.exception.code,403)
             self.assertEqual(self.store.state(self.tokens['admin'])['requests'],[])
+        finally:server.shutdown();server.server_close();thread.join()
+
+    def edit_part_data(self,part_id=1,**changes):
+        p=next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==part_id)
+        keys=('sku','name','bin','supplier','supplier_number','cost','threshold','target','lead_days','interval_days','type_ids','revision')
+        return {**{k:p[k] for k in keys},'part_id':part_id,'change_reason':'Catalog corrected',**changes}
+    def test_type_rename_preserves_links_and_historical_location(self):
+        r=self.request();self.act('tech','complete',request_id=r['id'])
+        old=self.store.state(self.tokens['admin'])['history'][0]['location_snapshot']
+        self.act('admin','type',id=1,revision=0,name='Precision DIMM Press')
+        state=self.store.state(self.tokens['admin'])
+        self.assertEqual(next(m for m in state['machines'] if m['id']==1)['type'],'Precision DIMM Press')
+        self.assertEqual(next(p for p in state['parts'] if p['id']==1)['type_ids'],[1,2])
+        self.assertEqual(state['history'][0]['location_snapshot'],old)
+        self.assertEqual(next(t for t in state['types'] if t['id']==1)['revision'],1)
+    def test_type_rename_checks_permission_duplicate_name_and_revision(self):
+        with self.assertRaises(Error):self.act('tech','type',id=1,revision=0,name='Forbidden')
+        with self.assertRaises(Error):self.act('admin','type',id=1,revision=0,name='acos station')
+        with self.assertRaises(Error):self.act('admin','type',id=1,revision=0,name='  ')
+        self.act('admin','type',id=1,revision=0,name='Press V2')
+        with self.assertRaises(Error) as caught:self.act('admin','type',id=1,revision=0,name='Press V3')
+        self.assertEqual(caught.exception.status,409)
+    def test_part_edit_preserves_stock_ledger_and_completed_records(self):
+        r=self.request();self.act('tech','complete',request_id=r['id'])
+        with self.store.tx() as db:
+            history=[dict(x) for x in db.execute('SELECT * FROM maintenance')]
+            ledger=[dict(x) for x in db.execute('SELECT * FROM ledger')]
+            stock=db.execute('SELECT stock FROM parts WHERE id=1').fetchone()[0]
+        self.act('admin','edit_part',**self.edit_part_data(name='Updated seal kit',sku='new-seal',bin='B01 / A-20',supplier='Supplier Co',supplier_number='S-001',cost=55.25,threshold=3,target=25,lead_days=7,interval_days=60,type_ids=[1,2]))
+        state=self.store.state(self.tokens['admin']);p=next(p for p in state['parts'] if p['id']==1)
+        self.assertEqual(p['stock'],stock);self.assertEqual(p['sku'],'NEW-SEAL');self.assertEqual(p['supplier'],'Supplier Co');self.assertEqual(p['revision'],1)
+        with self.store.tx() as db:
+            self.assertEqual([dict(x) for x in db.execute('SELECT * FROM maintenance')],history)
+            self.assertEqual([dict(x) for x in db.execute('SELECT * FROM ledger')],ledger)
+            audit=db.execute("SELECT detail FROM audit WHERE action='edit_part'").fetchone()
+            self.assertEqual(json.loads(audit['detail'])['reason'],'Catalog corrected')
+        early=self.request(key='new-cost',early_explanation='Defect')
+        self.act('lead','review',request_id=early['id'],decision='Approved',comment='Verified')
+        self.act('tech','complete',request_id=early['id'])
+        costs=[h['unit_cost'] for h in self.store.state(self.tokens['admin'])['history']]
+        self.assertEqual(costs,[55.25,24.5])
+    def test_part_edit_rejects_duplicate_sku_and_invalid_metadata_atomically(self):
+        original=self.store.state(self.tokens['admin'])['parts']
+        for change in [dict(sku='demo-filter'),dict(name=''),dict(bin=''),dict(cost=-1),dict(cost=True),dict(cost=float('nan')),dict(cost=1.234),dict(target=0),dict(interval_days=0),dict(lead_days=-1),dict(type_ids=[]),dict(type_ids=[True]),dict(type_ids=[999]),dict(change_reason='')]:
+            with self.assertRaises(Error):self.act('admin','edit_part',**self.edit_part_data(**change))
+        self.assertEqual(self.store.state(self.tokens['admin'])['parts'],original)
+    def test_part_edit_cannot_change_stock(self):
+        for change in [dict(stock=500),dict(quantity=500),dict(delta=500)]:
+            with self.assertRaises(Error):self.act('admin','edit_part',**self.edit_part_data(**change))
+        self.assertEqual(next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==1)['stock'],12)
+    def test_part_edit_blocked_for_technician_and_lead(self):
+        for user in ['tech','lead']:
+            with self.assertRaises(Error):self.act(user,'edit_part',**self.edit_part_data(name='Unauthorized'))
+    def test_part_compatibility_removal_checks_approved_and_pending_work(self):
+        approved=self.request()
+        with self.assertRaises(Error):self.act('admin','edit_part',**self.edit_part_data(type_ids=[2]))
+        self.act('tech','complete',request_id=approved['id'])
+        pending=self.request(key='pending-compatibility',early_explanation='Failure')
+        with self.assertRaises(Error):self.act('admin','edit_part',**self.edit_part_data(type_ids=[2]))
+        self.act('tech','cancel',request_id=pending['id'])
+        self.act('admin','edit_part',**self.edit_part_data(type_ids=[2]))
+        self.assertNotIn(1,[p['id'] for p in next(m for m in self.store.state(self.tokens['admin'])['machines'] if m['id']==1)['parts']])
+        self.assertEqual(len(self.store.state(self.tokens['admin'])['history']),1)
+    def test_part_compatibility_addition_uses_same_shared_balance(self):
+        self.act('admin','edit_part',**self.edit_part_data(type_ids=[1,2,3]))
+        machines=self.store.state(self.tokens['admin'])['machines']
+        self.assertIn(1,[p['id'] for p in next(m for m in machines if m['id']==4)['parts']])
+        self.assertEqual(len(self.store.state(self.tokens['admin'])['parts']),3)
+        r=self.request(mid=4);self.act('tech','complete',request_id=r['id'])
+        machines=self.store.state(self.tokens['admin'])['machines']
+        for machine in [1,4]:
+            self.assertEqual(next(p for p in next(m for m in machines if m['id']==machine)['parts'] if p['id']==1)['stock'],11)
+    def test_part_concurrent_metadata_edit_rejects_stale_writer(self):
+        data=self.edit_part_data()
+        def edit(name):
+            try:self.act('admin','edit_part',**{**data,'name':name});return True
+            except Error as e:self.assertEqual(e.status,409);return False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:result=list(pool.map(edit,['First edit','Second edit']))
+        self.assertEqual(sum(result),1)
+        self.assertEqual(next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==1)['revision'],1)
+    def test_receipts_during_catalog_edit_are_not_overwritten(self):
+        data=self.edit_part_data()
+        self.act('admin','receipt',part_id=1,quantity=5,reason='delivery',operation_key='catalog-receipt')
+        self.act('admin','edit_part',**{**data,'name':'Edited after receipt'})
+        self.assertEqual(next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==1)['stock'],17)
+    def test_changed_interval_rechecked_at_completion(self):
+        first=self.request();self.act('tech','complete',request_id=first['id'])
+        # Set historical time to 100 days ago to exercise a normal request at 90 days.
+        with self.store.tx() as db:db.execute('UPDATE maintenance SET replaced=? WHERE request_id=?',((datetime.now(timezone.utc)-timedelta(days=100)).isoformat(),first['id']))
+        normal=self.request(key='normal-100-days')
+        self.act('admin','edit_part',**self.edit_part_data(interval_days=180))
+        with self.assertRaises(Error):self.act('tech','complete',request_id=normal['id'])
+        self.assertEqual(next(r for r in self.store.state(self.tokens['admin'])['requests'] if r['id']==normal['id'])['state'],'Approved')
+    def test_catalog_v2_upgrade_preserves_data_and_line_grants(self):
+        self.line_only()
+        before=self.store.state(self.tokens['admin'])
+        with self.store.tx() as db:
+            db.execute('ALTER TABLE parts DROP COLUMN revision');db.execute('ALTER TABLE types DROP COLUMN revision');db.execute('PRAGMA user_version=2')
+        upgraded=Store(self.store.path)
+        self.assertEqual(upgraded.state(self.tokens['admin']),before)
+        self.assertEqual(upgraded.state(self.tokens['tech'])['user']['line_ids'],[1])
+    def test_catalog_v3_restart_preserves_revisions(self):
+        self.act('admin','edit_part',**self.edit_part_data(name='Renamed'))
+        self.act('admin','type',id=1,revision=0,name='Type renamed')
+        restarted=Store(self.store.path)
+        state=restarted.state(self.tokens['admin'])
+        self.assertEqual(next(p for p in state['parts'] if p['id']==1)['revision'],1)
+        self.assertEqual(next(t for t in state['types'] if t['id']==1)['revision'],1)
+    def test_http_part_update_and_permission_enforcement(self):
+        server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        def update(token,data):
+            req=Request(f'http://127.0.0.1:{server.server_port}/actions/edit_part',data=json.dumps(data).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+token})
+            with urlopen(req) as response:return json.load(response)
+        try:
+            data=self.edit_part_data(name='HTTP updated part')
+            with self.assertRaises(HTTPError) as caught:update(self.tokens['tech'],data)
+            self.assertEqual(caught.exception.code,403)
+            update(self.tokens['admin'],data)
+            self.assertEqual(next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==1)['name'],'HTTP updated part')
         finally:server.shutdown();server.server_close();thread.join()
 
 if __name__=='__main__': unittest.main()

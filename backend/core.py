@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import access_policy as scopes
+import catalog
 
 class Error(Exception):
     def __init__(self, message, status=400):
@@ -36,11 +37,13 @@ class Store:
         try:
             db.execute('PRAGMA foreign_keys=ON')
             version=db.execute('PRAGMA user_version').fetchone()[0]
-            if version>2: raise Error('Database is newer than this application. Upgrade the app; do not downgrade.')
+            if version>3: raise Error('Database is newer than this application. Upgrade the app; do not downgrade.')
             db.executescript(Path(__file__).with_name('schema.sql').read_text())
             if version<1: db.execute('PRAGMA user_version=1')
             if version<2:
                 db.executescript((Path(__file__).parent/'migrations'/'002_line_access.sql').read_text())
+            if version<3:
+                db.executescript((Path(__file__).parent/'migrations'/'003_catalog_revision.sql').read_text())
         except Exception:
             if db.in_transaction: db.rollback()
             raise
@@ -100,6 +103,11 @@ class Store:
         for tech in db.execute('SELECT id,lead_id FROM users WHERE lead_id IS NOT NULL').fetchall():
             if not scopes.covers(db,scopes.grants(db,tech['lead_id']),scopes.grants(db,tech['id'])):
                 raise Error('Moving this line would leave a lead without access to assigned technician lines. Update assignments first.')
+    def public_part(self,db,p):
+        return {**dict(p),'type_ids':[r[0] for r in db.execute('SELECT type_id FROM compatibility WHERE part_id=? ORDER BY type_id',(p['id'],))]}
+    def catalog_validation(self,fn,*args):
+        try: return fn(*args)
+        except catalog.CatalogError as e: raise Error(str(e)) from e
     def state(self,raw):
         with self.tx() as db:
             u=self.user(db,raw)
@@ -109,7 +117,7 @@ class Store:
                 except Error: continue
                 item=dict(m); item['name']=self.name(m); item['parts']=[]
                 for p in db.execute('SELECT p.* FROM parts p JOIN compatibility c ON c.part_id=p.id WHERE c.type_id=?',(m['type_id'],)).fetchall():
-                    part=dict(p)
+                    part=self.public_part(db,p)
                     last=db.execute('SELECT MAX(replaced) FROM maintenance WHERE machine_id=? AND part_id=?',(m['id'],p['id'])).fetchone()[0]
                     part['last_replacement']=last
                     item['parts'].append(part)
@@ -120,7 +128,7 @@ class Store:
             scope=scopes.grants(db,u['id'])
             accessible_lines=[dict(l) for l in db.execute('SELECT * FROM lines') if u['role']=='Administrator' or scopes.allows(scope,l['building_id'],l['id'])]
             building_ids=scope[0]|{l['building_id'] for l in accessible_lines}
-            return {'user':self.public_scope(db,u),'machines':machines,'parts':[dict(r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':accessible_lines, 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[self.public_scope(db,r) for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
+            return {'user':self.public_scope(db,u),'machines':machines,'parts':[self.public_part(db,r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':accessible_lines, 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[self.public_scope(db,r) for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
     def execute(self,raw,action,d):
         with self.tx() as db:
             u=self.user(db,raw,action in ('password','logout'))
@@ -131,7 +139,7 @@ class Store:
                 if not password_ok(required(d,'current_password'),u['password']): raise Error('Current password is incorrect.')
                 db.execute('UPDATE users SET password=?,must_change=0,version=version+1 WHERE id=?',(password_hash(required(d,'new_password')),uid))
                 db.execute('DELETE FROM sessions WHERE user_id=?',(uid,)); return {'message':'Password changed. Sign in again.'}
-            if action in ('building','line','type','machine','part','user','edit_user','reset','disable','receipt','adjust'):
+            if action in ('building','line','type','machine','part','edit_part','user','edit_user','reset','disable','receipt','adjust'):
                 self.admin(u)
                 if action=='building':
                     values=(required(d,'code'),required(d,'name'))
@@ -142,21 +150,53 @@ class Store:
                     if d.get('id'): db.execute('UPDATE lines SET building_id=?,code=?,description=? WHERE id=?',(*values,integer(d,'id')))
                     else: db.execute('INSERT INTO lines(building_id,code,description) VALUES(?,?,?)',values)
                     self.check_lead_coverage(db)
-                elif action=='type': db.execute('INSERT INTO types(name) VALUES(?)',(required(d,'name'),))
+                elif action=='type':
+                    name=self.catalog_validation(catalog.text,d,'name')
+                    type_id=integer(d,'id') if 'id' in d else None
+                    self.catalog_validation(catalog.unique_type_name,db,name,type_id)
+                    if type_id is None:
+                        db.execute('INSERT INTO types(name) VALUES(?)',(name,))
+                    else:
+                        old=db.execute('SELECT * FROM types WHERE id=?',(type_id,)).fetchone()
+                        if not old: raise Error('Machine type not found.',404)
+                        revision=integer(d,'revision',0)
+                        if revision!=old['revision']: raise Error('This machine type changed in another session. Reopen its editor before saving.',409)
+                        if name!=old['name']:
+                            db.execute('UPDATE types SET name=?,revision=revision+1 WHERE id=? AND revision=?',(name,type_id,revision))
+                        self.audit(db,uid,'edit_type',{'type_id':type_id,'before':dict(old),'after':dict(db.execute('SELECT * FROM types WHERE id=?',(type_id,)).fetchone())})
+                        return {'message':'Machine type saved.'}
                 elif action=='machine':
                     values=(integer(d,'line_id'),integer(d,'type_id'),required(d,'station'),required(d,'asset_tag'),d.get('serial',''),d.get('status','Operating'))
                     if d.get('id'): db.execute('UPDATE machines SET line_id=?,type_id=?,station=?,asset_tag=?,serial=?,status=? WHERE id=?',(*values,integer(d,'id')))
                     else: db.execute('INSERT INTO machines(line_id,type_id,station,asset_tag,serial,status) VALUES(?,?,?,?,?,?)',values)
-                elif action=='part':
-                    cost=d.get('cost')
-                    if isinstance(cost,bool) or not isinstance(cost,(int,float)) or not 0<=cost<1e9: raise Error('cost must be a nonnegative finite number.')
-                    types=d.get('type_ids',[])
-                    if not types or any(type(t)!=int for t in types): raise Error('Select compatible machine types.')
-                    stock=integer(d,'stock',0)
-                    cur=db.execute('INSERT INTO parts(sku,name,bin,supplier,supplier_number,cost,stock,threshold,target,lead_days,interval_days) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(required(d,'sku'),required(d,'name'),required(d,'bin'),d.get('supplier',''),d.get('supplier_number',''),cost,stock,integer(d,'threshold',0),integer(d,'target',0),integer(d,'lead_days',0),integer(d,'interval_days')))
-                    part_id=cur.lastrowid
-                    for t in set(types): db.execute('INSERT INTO compatibility VALUES(?,?)',(part_id,t))
-                    db.execute('INSERT INTO ledger(part_id,delta,reason,actor_id,created,operation_key) VALUES(?,?,?,?,?,?)',(part_id,stock,'Opening balance',uid,now(),secrets.token_hex(16)))
+                elif action in ('part','edit_part'):
+                    if action=='edit_part' and any(k in d for k in ('stock','quantity','delta')): raise Error('Edit details cannot change stock. Use a receipt or inventory adjustment.')
+                    details=self.catalog_validation(catalog.part_details,db,d)
+                    pid=integer(d,'part_id') if action=='edit_part' else None
+                    self.catalog_validation(catalog.unique_sku,db,details['sku'],pid)
+                    columns=('sku','name','bin','supplier','supplier_number','cost','threshold','target','lead_days','interval_days')
+                    values=tuple(details[k] for k in columns)
+                    if action=='part':
+                        stock=integer(d,'stock',0)
+                        cur=db.execute('INSERT INTO parts(sku,name,bin,supplier,supplier_number,cost,threshold,target,lead_days,interval_days,stock) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(*values,stock))
+                        pid=cur.lastrowid
+                        for t in details['type_ids']: db.execute('INSERT INTO compatibility VALUES(?,?)',(pid,t))
+                        db.execute('INSERT INTO ledger(part_id,delta,reason,actor_id,created,operation_key) VALUES(?,?,?,?,?,?)',(pid,stock,'Opening balance',uid,now(),secrets.token_hex(16)))
+                    else:
+                        old=db.execute('SELECT * FROM parts WHERE id=?',(pid,)).fetchone()
+                        if not old: raise Error('Part not found.',404)
+                        before=self.public_part(db,old)
+                        revision=integer(d,'revision',0)
+                        if revision!=old['revision']: raise Error('This part changed in another session. Reopen its editor before saving.',409)
+                        reason=required(d,'change_reason')
+                        incompatible=[r['id'] for r in db.execute("SELECT r.id,m.type_id FROM requests r JOIN machines m ON m.id=r.machine_id WHERE r.part_id=? AND r.state IN ('Pending','Approved')",(pid,)) if r['type_id'] not in details['type_ids']]
+                        if incompatible: raise Error('Cannot remove compatibility used by active requests '+', '.join('#'+str(r) for r in incompatible)+'. Finish or cancel them first.')
+                        cur=db.execute('UPDATE parts SET sku=?,name=?,bin=?,supplier=?,supplier_number=?,cost=?,threshold=?,target=?,lead_days=?,interval_days=?,revision=revision+1 WHERE id=? AND revision=?',(*values,pid,revision))
+                        if cur.rowcount!=1: raise Error('Part changed in another session. Reopen its editor.',409)
+                        db.execute('DELETE FROM compatibility WHERE part_id=?',(pid,))
+                        for t in details['type_ids']: db.execute('INSERT INTO compatibility VALUES(?,?)',(pid,t))
+                        self.audit(db,uid,'edit_part',{'part_id':pid,'reason':reason,'before':before,'after':self.public_part(db,db.execute('SELECT * FROM parts WHERE id=?',(pid,)).fetchone())})
+                        return {'message':'Part details saved. Stock and completed maintenance were not changed.'}
                 elif action=='user':
                     role=required(d,'role'); lead=d.get('lead_id')
                     if role not in ('Administrator','Lead','Technician'): raise Error('Invalid role.')
