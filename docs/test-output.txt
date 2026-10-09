@@ -1,0 +1,22 @@
+test_competing_normal_requests_cannot_bypass_early_review (test_core.WorkflowTests.test_competing_normal_requests_cannot_bypass_early_review) ... ok
+test_disable_revokes_sessions (test_core.WorkflowTests.test_disable_revokes_sessions) ... ok
+test_duplicate_request_and_receipt (test_core.WorkflowTests.test_duplicate_request_and_receipt) ... ok
+test_early_approval_consumes_only_at_completion (test_core.WorkflowTests.test_early_approval_consumes_only_at_completion) ... ok
+test_http_technician_and_lead_flow (test_core.WorkflowTests.test_http_technician_and_lead_flow) ... MachineCare pilot API: http://127.0.0.1:35687
+ok
+test_identity_last_date_and_duplicate_completion (test_core.WorkflowTests.test_identity_last_date_and_duplicate_completion) ... ok
+test_incompatible_part (test_core.WorkflowTests.test_incompatible_part) ... ok
+test_last_item_concurrency (test_core.WorkflowTests.test_last_item_concurrency) ... ok
+test_logout_and_expiration (test_core.WorkflowTests.test_logout_and_expiration) ... ok
+test_missing_lead_blocked (test_core.WorkflowTests.test_missing_lead_blocked) ... ok
+test_move_preserves_location_snapshot (test_core.WorkflowTests.test_move_preserves_location_snapshot) ... ok
+test_no_negative_adjustments (test_core.WorkflowTests.test_no_negative_adjustments) ... ok
+test_optional_line_and_duplicate_sku (test_core.WorkflowTests.test_optional_line_and_duplicate_sku) ... ok
+test_rejection_blocks_completion (test_core.WorkflowTests.test_rejection_blocks_completion) ... ok
+test_reset_forces_change_and_revokes (test_core.WorkflowTests.test_reset_forces_change_and_revokes) ... ok
+test_role_and_assignment_permissions (test_core.WorkflowTests.test_role_and_assignment_permissions) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 6.787s
+
+OK

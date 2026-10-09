@@ -1,0 +1,8 @@
+*.db
+*.db-*
+__pycache__/
+*.pyc
+.env
+app/.dart_tool/
+app/build/
+app/.flutter-plugins*
