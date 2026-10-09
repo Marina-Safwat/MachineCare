@@ -3,6 +3,7 @@ import base64, hashlib, hmac, json, os, secrets, sqlite3, time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+import access_policy as scopes
 
 class Error(Exception):
     def __init__(self, message, status=400):
@@ -31,7 +32,19 @@ def integer(data,key,minimum=1):
 class Store:
     def __init__(self,path):
         self.path=str(path)
-        with self.tx() as db: db.executescript(Path(__file__).with_name('schema.sql').read_text())
+        db=sqlite3.connect(self.path,timeout=20,isolation_level=None)
+        try:
+            db.execute('PRAGMA foreign_keys=ON')
+            version=db.execute('PRAGMA user_version').fetchone()[0]
+            if version>2: raise Error('Database is newer than this application. Upgrade the app; do not downgrade.')
+            db.executescript(Path(__file__).with_name('schema.sql').read_text())
+            if version<1: db.execute('PRAGMA user_version=1')
+            if version<2:
+                db.executescript((Path(__file__).parent/'migrations'/'002_line_access.sql').read_text())
+        except Exception:
+            if db.in_transaction: db.rollback()
+            raise
+        finally: db.close()
     @contextmanager
     def tx(self):
         db=sqlite3.connect(self.path,timeout=20,isolation_level=None)
@@ -73,10 +86,20 @@ class Store:
     def machine(self,db,u,machine_id):
         m=db.execute('SELECT m.*,b.id building_id,b.code building,l.code line,t.name type FROM machines m JOIN lines l ON l.id=m.line_id JOIN buildings b ON b.id=l.building_id JOIN types t ON t.id=m.type_id WHERE m.id=?',(machine_id,)).fetchone()
         if not m: raise Error('Machine not found.',404)
-        if u['role']!='Administrator' and not db.execute('SELECT 1 FROM access WHERE user_id=? AND building_id=?',(u['id'],m['building_id'])).fetchone(): raise Error('Machine outside your assigned buildings.',403)
+        if u['role']!='Administrator' and not scopes.allows(scopes.grants(db,u['id']),m['building_id'],m['line_id']): raise Error('Machine outside your assigned buildings or production lines.',403)
         return m
     @staticmethod
     def name(m): return f"{m['building']} · {m['line']} · Station {m['station']} · {m['type']}"
+    def public_scope(self,db,u):
+        buildings,lines=scopes.grants(db,u['id'])
+        return {**self.public_user(u),'building_ids':sorted(buildings),'line_ids':sorted(lines)}
+    def validate_scope(self,db,buildings,lines):
+        try: return scopes.validate(db,buildings,lines)
+        except ValueError as e: raise Error(str(e)) from e
+    def check_lead_coverage(self,db):
+        for tech in db.execute('SELECT id,lead_id FROM users WHERE lead_id IS NOT NULL').fetchall():
+            if not scopes.covers(db,scopes.grants(db,tech['lead_id']),scopes.grants(db,tech['id'])):
+                raise Error('Moving this line would leave a lead without access to assigned technician lines. Update assignments first.')
     def state(self,raw):
         with self.tx() as db:
             u=self.user(db,raw)
@@ -94,8 +117,10 @@ class Store:
             visible={m['id'] for m in machines}
             requests=[dict(r) for r in db.execute('SELECT r.*,u.username technician,p.name part FROM requests r JOIN users u ON u.id=r.technician_id JOIN parts p ON p.id=r.part_id ORDER BY r.id DESC') if r['machine_id'] in visible and (u['role']=='Administrator' or r['technician_id']==u['id'] or r['lead_id']==u['id'])]
             history=[dict(r) for r in db.execute('SELECT m.*,p.name part,u.username technician FROM maintenance m JOIN parts p ON p.id=m.part_id JOIN users u ON u.id=m.technician_id ORDER BY m.id DESC') if r['machine_id'] in visible]
-            building_ids={m['building_id'] for m in machines}
-            return {'user':self.public_user(u),'machines':machines,'parts':[dict(r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':[dict(r) for r in db.execute('SELECT * FROM lines') if u['role']=='Administrator' or r['building_id'] in building_ids], 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[{**self.public_user(r),'building_ids':[a[0] for a in db.execute('SELECT building_id FROM access WHERE user_id=? ORDER BY building_id',(r['id'],))]} for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
+            scope=scopes.grants(db,u['id'])
+            accessible_lines=[dict(l) for l in db.execute('SELECT * FROM lines') if u['role']=='Administrator' or scopes.allows(scope,l['building_id'],l['id'])]
+            building_ids=scope[0]|{l['building_id'] for l in accessible_lines}
+            return {'user':self.public_scope(db,u),'machines':machines,'parts':[dict(r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':accessible_lines, 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[self.public_scope(db,r) for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
     def execute(self,raw,action,d):
         with self.tx() as db:
             u=self.user(db,raw,action in ('password','logout'))
@@ -116,6 +141,7 @@ class Store:
                     values=(integer(d,'building_id'),required(d,'code'),d.get('description',''))
                     if d.get('id'): db.execute('UPDATE lines SET building_id=?,code=?,description=? WHERE id=?',(*values,integer(d,'id')))
                     else: db.execute('INSERT INTO lines(building_id,code,description) VALUES(?,?,?)',values)
+                    self.check_lead_coverage(db)
                 elif action=='type': db.execute('INSERT INTO types(name) VALUES(?)',(required(d,'name'),))
                 elif action=='machine':
                     values=(integer(d,'line_id'),integer(d,'type_id'),required(d,'station'),required(d,'asset_tag'),d.get('serial',''),d.get('status','Operating'))
@@ -134,9 +160,14 @@ class Store:
                 elif action=='user':
                     role=required(d,'role'); lead=d.get('lead_id')
                     if role not in ('Administrator','Lead','Technician'): raise Error('Invalid role.')
-                    if lead and not db.execute("SELECT 1 FROM users WHERE id=? AND role='Lead' AND active=1",(lead,)).fetchone(): raise Error('Select an active lead.')
+                    if lead is not None and (type(lead)!=int or lead<1): raise Error('Select a valid lead ID.')
+                    if role!='Technician' and lead is not None: raise Error('Lead assignments apply to Technician accounts.')
+                    scope=self.validate_scope(db,d.get('building_ids',[]),d.get('line_ids',[]))
+                    if lead is not None:
+                        if not db.execute("SELECT 1 FROM users WHERE id=? AND role='Lead' AND active=1",(lead,)).fetchone(): raise Error('Select an active Lead account.')
+                        if not scopes.covers(db,scopes.grants(db,lead),scope): raise Error('The assigned lead needs access to all selected buildings and lines.')
                     cur=db.execute('INSERT INTO users(username,password,role,lead_id) VALUES(?,?,?,?)',(required(d,'username'),password_hash(required(d,'password')),role,lead))
-                    for b in set(d.get('building_ids',[])): db.execute('INSERT INTO access VALUES(?,?)',(cur.lastrowid,b))
+                    scopes.write(db,cur.lastrowid,scope)
                 elif action=='edit_user':
                     target=integer(d,'user_id')
                     if target==uid: raise Error('Another administrator must edit your own role or access.')
@@ -144,34 +175,27 @@ class Store:
                     if not previous: raise Error('Account not found.',404)
                     role=required(d,'role')
                     if role not in ('Administrator','Lead','Technician'): raise Error('Invalid role.')
-                    buildings=d.get('building_ids')
-                    if not isinstance(buildings,list) or any(type(b)!=int or b<1 for b in buildings): raise Error('building_ids must be a list of positive building IDs.')
-                    buildings=set(buildings)
-                    for b in buildings:
-                        if not db.execute('SELECT 1 FROM buildings WHERE id=?',(b,)).fetchone(): raise Error('Selected building does not exist.')
+                    old_buildings,old_lines=scopes.grants(db,target)
+                    buildings,lines=self.validate_scope(db,d.get('building_ids'),d.get('line_ids',sorted(old_lines)))
                     lead=d.get('lead_id')
                     if lead is not None and (type(lead)!=int or lead<1): raise Error('Select a valid lead ID.')
                     if lead==target: raise Error('An account cannot be its own assigned lead.')
                     if role!='Technician' and lead is not None: raise Error('Lead assignments apply to Technician accounts.')
                     if lead is not None:
                         if not db.execute("SELECT 1 FROM users WHERE id=? AND role='Lead' AND active=1",(lead,)).fetchone(): raise Error('Select an active Lead account.')
-                        lead_buildings={a[0] for a in db.execute('SELECT building_id FROM access WHERE user_id=?',(lead,))}
-                        if not buildings<=lead_buildings: raise Error('The assigned lead needs access to all selected technician buildings.')
+                        if not scopes.covers(db,scopes.grants(db,lead),(buildings,lines)): raise Error('The assigned lead needs access to all selected technician buildings and lines.')
                     assigned=db.execute('SELECT id FROM users WHERE lead_id=?',(target,)).fetchall()
                     if assigned and role!='Lead': raise Error('Reassign this lead’s technicians before changing the lead’s role.')
                     for technician in assigned:
-                        tech_buildings={a[0] for a in db.execute('SELECT building_id FROM access WHERE user_id=?',(technician['id'],))}
-                        if not tech_buildings<=buildings: raise Error('This lead still supervises technicians in the removed buildings. Reassign them first.')
+                        if not scopes.covers(db,(buildings,lines),scopes.grants(db,technician['id'])): raise Error('This lead still supervises technicians in removed buildings or lines. Reassign them first.')
                     if role!='Lead' and db.execute("SELECT 1 FROM requests WHERE lead_id=? AND state='Pending'",(target,)).fetchone(): raise Error('Review or reassign pending approvals before changing this lead’s role.')
-                    pending=db.execute("SELECT r.id,l.building_id FROM requests r JOIN machines m ON m.id=r.machine_id JOIN lines l ON l.id=m.line_id WHERE r.technician_id=? AND r.state='Pending'",(target,)).fetchall()
+                    pending=db.execute("SELECT r.id,l.building_id,m.line_id FROM requests r JOIN machines m ON m.id=r.machine_id JOIN lines l ON l.id=m.line_id WHERE r.technician_id=? AND r.state='Pending'",(target,)).fetchall()
                     if pending and role!='Technician': raise Error('Finish or cancel this account’s pending early requests before changing its role.')
-                    if pending and (lead is None or any(r['building_id'] not in buildings for r in pending)): raise Error('Pending early requests need a lead and access to their machine buildings. Finish or cancel them first.')
-                    old_buildings={a[0] for a in db.execute('SELECT building_id FROM access WHERE user_id=?',(target,))}
-                    changed=previous['role']!=role or previous['lead_id']!=lead or old_buildings!=buildings
+                    if pending and (lead is None or any(not scopes.allows((buildings,lines),r['building_id'],r['line_id']) for r in pending)): raise Error('Pending early requests need a lead and access to their machine buildings. Finish or cancel them first.')
+                    changed=previous['role']!=role or previous['lead_id']!=lead or old_buildings!=buildings or old_lines!=lines
                     if changed:
                         db.execute('UPDATE users SET role=?,lead_id=?,version=version+1 WHERE id=?',(role,lead,target))
-                        db.execute('DELETE FROM access WHERE user_id=?',(target,))
-                        for b in sorted(buildings): db.execute('INSERT INTO access VALUES(?,?)',(target,b))
+                        scopes.write(db,target,(buildings,lines))
                         db.execute('DELETE FROM sessions WHERE user_id=?',(target,))
                         if previous['lead_id']!=lead:
                             for r in pending:
@@ -179,7 +203,7 @@ class Store:
                                 db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(lead,f"Early replacement #{r['id']} reassigned to you for review.",now()))
                                 if previous['lead_id']:
                                     db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(previous['lead_id'],f"Early replacement #{r['id']} reassigned to another lead.",now()))
-                    self.audit(db,uid,'edit_user',{'user_id':target,'before':{'role':previous['role'],'lead_id':previous['lead_id'],'building_ids':sorted(old_buildings)},'after':{'role':role,'lead_id':lead,'building_ids':sorted(buildings)},'pending_reassigned':[r['id'] for r in pending] if previous['lead_id']!=lead else []})
+                    self.audit(db,uid,'edit_user',{'user_id':target,'before':{'role':previous['role'],'lead_id':previous['lead_id'],'building_ids':sorted(old_buildings),'line_ids':sorted(old_lines)},'after':{'role':role,'lead_id':lead,'building_ids':sorted(buildings),'line_ids':sorted(lines)},'pending_reassigned':[r['id'] for r in pending] if previous['lead_id']!=lead else []})
                     return {'message':'Account updated. Changed permissions revoke existing sessions.' if changed else 'No changes.'}
                 elif action in ('reset','disable'):
                     target=integer(d,'user_id')

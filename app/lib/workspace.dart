@@ -195,7 +195,7 @@ class _WorkspaceState extends State<Workspace> {
       panel('Buildings & lines', [Wrap(spacing: 12, children: [FilledButton.tonal(onPressed: () => form('Create building', 'building', [['code', 'Building code'], ['name', 'Building name']]), child: const Text('Add building')), FilledButton.tonal(onPressed: () => form('Create line', 'line', [['building_id', 'Building ID', 'int'], ['code', 'Line code'], ['description', 'Description (optional)', 'optional']]), child: const Text('Add line'))]), for (final b in rows(state, 'buildings')) ListTile(title: Text('#${b['id']} ${b['code']} · ${b['name']}'), trailing: IconButton(tooltip: 'Edit building', icon: const Icon(Icons.edit_outlined), onPressed: () => form('Edit building', 'building', [['code', 'Code', 'text', b['code'] as String], ['name', 'Name', 'text', b['name'] as String]], extra: {'id': b['id']}))), for (final l in rows(state, 'lines')) ListTile(title: Text('Line #${l['id']} • Building ${l['building_id']} • ${l['code']}'), subtitle: Text(l['description'] as String), trailing: IconButton(tooltip: 'Edit line', icon: const Icon(Icons.edit_outlined), onPressed: () => form('Edit line', 'line', [['building_id', 'Building ID', 'int', '${l['building_id']}'], ['code', 'Code', 'text', l['code'] as String], ['description', 'Description (optional)', 'optional', l['description'] as String]], extra: {'id': l['id']})))]),
       panel('Machine types', [FilledButton.tonal(onPressed: () => form('Add machine type', 'type', [['name', 'Machine type name']]), child: const Text('Add type')), for (final t in rows(state, 'types')) Text('#${t['id']} ${t['name']}')]),
       panel('Equipment registry', [FilledButton.tonal(onPressed: () => editMachine(null), child: const Text('Register machine')), for (final m in rows(state, 'machines')) ListTile(title: Text(m['name'] as String), subtitle: Text('Machine ID ${m['id']}'), trailing: IconButton(tooltip: 'Edit, move or retire machine', icon: const Icon(Icons.edit_outlined), onPressed: () => editMachine(m)))]),
-      panel('Accounts', [FilledButton.tonal(onPressed: createUser, child: const Text('Create employee account')), for (final u in rows(state, 'users')) ListTile(title: Text('${u['username']} · ${u['role']}'), subtitle: Text('ID ${u['id']} • Lead ${u['lead_id'] ?? 'unassigned'} • ${u['active'] == 1 ? 'Active' : 'Disabled'}'), trailing: u['id'] == state['user']['id'] ? null : Wrap(children: [IconButton(tooltip: 'Edit role, lead and building access', icon: const Icon(Icons.edit_outlined), onPressed: () => editUser(u)), IconButton(tooltip: 'Reset password', icon: const Icon(Icons.key), onPressed: () => form('Reset employee password', 'reset', [['password', 'Temporary password (12+ characters)']], extra: {'user_id': u['id']})), IconButton(tooltip: u['active'] == 1 ? 'Disable' : 'Enable', icon: Icon(u['active'] == 1 ? Icons.block : Icons.check_circle_outline), onPressed: () => act('disable', {'user_id': u['id'], 'active': u['active'] == 1 ? 0 : 1}))]))]),
+      panel('Accounts', [FilledButton.tonal(onPressed: createUser, child: const Text('Create employee account')), for (final u in rows(state, 'users')) ListTile(title: Text('${u['username']} · ${u['role']}'), subtitle: Text('ID ${u['id']} • Lead ${u['lead_id'] ?? 'unassigned'} • ${u['active'] == 1 ? 'Active' : 'Disabled'}'), trailing: u['id'] == state['user']['id'] ? null : Wrap(children: [IconButton(tooltip: 'Edit role, lead, building and line access', icon: const Icon(Icons.edit_outlined), onPressed: () => editUser(u)), IconButton(tooltip: 'Reset password', icon: const Icon(Icons.key), onPressed: () => form('Reset employee password', 'reset', [['password', 'Temporary password (12+ characters)']], extra: {'user_id': u['id']})), IconButton(tooltip: u['active'] == 1 ? 'Disable' : 'Enable', icon: Icon(u['active'] == 1 ? Icons.block : Icons.check_circle_outline), onPressed: () => act('disable', {'user_id': u['id'], 'active': u['active'] == 1 ? 0 : 1}))]))]),
     ]);
   }
   Future<void> editMachine(Map<String, dynamic>? m) => form(m == null ? 'Register machine' : 'Edit / move / retire machine', 'machine', [['line_id', 'Line ID', 'int', '${m?['line_id'] ?? ''}'], ['type_id', 'Type ID', 'int', '${m?['type_id'] ?? ''}'], ['station', 'Station / position within line', 'text', '${m?['station'] ?? ''}'], ['asset_tag', 'Unique asset tag', 'text', '${m?['asset_tag'] ?? ''}'], ['serial', 'Serial number', 'optional', '${m?['serial'] ?? ''}'], ['status', 'Operating / Maintenance / Stopped / Retired', 'text', '${m?['status'] ?? 'Operating'}']], extra: {if (m != null) 'id': m['id']});
@@ -204,14 +204,19 @@ class _WorkspaceState extends State<Workspace> {
       user: user,
       users: rows(state, 'users'),
       buildings: rows(state, 'buildings'),
+      lines: rows(state, 'lines'),
       onSave: (data) async { await widget.api.action('edit_user', data); },
     ));
     if (!mounted) return;
     await refresh();
   }
   Future<void> createUser() async {
-    final fields = <EntryField>[EntryField('username', 'Username', TextEditingController()), EntryField('password', 'Temporary password (12+ characters)', TextEditingController(), secret: true), EntryField('role', 'Administrator / Lead / Technician', TextEditingController(text: 'Technician')), EntryField('lead', 'Lead ID (blank if none)', TextEditingController(), optional: true), EntryField('buildings', 'Building IDs, comma separated', TextEditingController(text: '1'), optional: true)];
-    await showDialog<bool>(context: context, builder: (_) => EntryDialog(title: 'Create employee account', fields: fields, onSave: (d) async { await widget.api.action('user', {'username': d['username'], 'password': d['password'], 'role': d['role'], 'lead_id': (d['lead'] as String).trim().isEmpty ? null : int.parse(d['lead'] as String), 'building_ids': (d['buildings'] as String).split(',').where((v) => v.trim().isNotEmpty).map((v) => int.parse(v.trim())).toList()}); }));
+    await showDialog<bool>(context: context, builder: (_) => AccountEditor(
+      creating: true,
+      user: const {'role': 'Technician', 'building_ids': [], 'line_ids': []},
+      users: rows(state, 'users'), buildings: rows(state, 'buildings'), lines: rows(state, 'lines'),
+      onSave: (data) async { await widget.api.action('user', data); },
+    ));
     if (!mounted) return;
     await refresh();
   }
@@ -226,15 +231,18 @@ class _WorkspaceState extends State<Workspace> {
 /// Administrator editor: names stay stable while permissions can change.
 class AccountEditor extends StatefulWidget {
   final Map<String, dynamic> user;
-  final List<Map<String, dynamic>> users, buildings;
+  final List<Map<String, dynamic>> users, buildings, lines;
+  final bool creating;
   final Future<void> Function(Map<String, dynamic>) onSave;
-  const AccountEditor({super.key, required this.user, required this.users, required this.buildings, required this.onSave});
+  const AccountEditor({super.key, required this.user, required this.users, required this.buildings, this.lines = const [], this.creating = false, required this.onSave});
   @override State<AccountEditor> createState() => _AccountEditorState();
 }
 class _AccountEditorState extends State<AccountEditor> {
   late String role;
   int? leadId;
-  late Set<int> buildingIds;
+  late Set<int> buildingIds, lineIds;
+  final username = TextEditingController(), password = TextEditingController();
+  @override void dispose() { username.dispose(); password.dispose(); super.dispose(); }
   bool busy = false;
   String? error;
   @override void initState() {
@@ -242,11 +250,14 @@ class _AccountEditorState extends State<AccountEditor> {
     role = widget.user['role'] as String;
     leadId = widget.user['lead_id'] as int?;
     buildingIds = (widget.user['building_ids'] as List? ?? []).cast<int>().toSet();
+    lineIds = (widget.user['line_ids'] as List? ?? []).cast<int>().toSet();
   }
   Future<void> save() async {
     setState(() { busy = true; error = null; });
     try {
-      await widget.onSave({'user_id': widget.user['id'], 'role': role, 'lead_id': role == 'Technician' ? leadId : null, 'building_ids': buildingIds.toList()..sort()});
+      if (widget.creating && username.text.trim().isEmpty) throw Exception('Username is required.');
+      if (widget.creating && password.text.length < 12) throw Exception('Use a temporary password of at least 12 characters.');
+      await widget.onSave({if (!widget.creating) 'user_id': widget.user['id'], if (widget.creating) ...{'username': username.text.trim(), 'password': password.text}, 'role': role, 'lead_id': role == 'Technician' ? leadId : null, 'building_ids': buildingIds.toList()..sort(), 'line_ids': lineIds.toList()..sort()});
       if (mounted) Navigator.pop(context, true);
     } catch (e) { if (mounted) setState(() => error = cleanError(e)); }
     finally { if (mounted) setState(() => busy = false); }
@@ -254,8 +265,15 @@ class _AccountEditorState extends State<AccountEditor> {
   @override Widget build(BuildContext context) {
     final leads = widget.users.where((u) => u['role'] == 'Lead' && u['active'] == 1 && u['id'] != widget.user['id']).toList();
     return AlertDialog(
-      title: Text('Edit account · ${widget.user['username']}'),
+      title: Text(widget.creating ? 'Create employee account' : 'Edit account · ${widget.user['username']}'),
       content: SizedBox(width: 520, child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+        if (widget.creating) ...[
+          TextField(controller: username, enabled: !busy, decoration: const InputDecoration(labelText: 'Username')),
+          const SizedBox(height: 16),
+          TextField(controller: password, enabled: !busy, obscureText: true, decoration: const InputDecoration(labelText: 'Temporary password (12+ characters)')),
+          const SizedBox(height: 12),
+          const Text('This employee must change the temporary password on first login.'),
+        ] else
         const Text('Permission changes sign this employee out. Pending early requests move to the newly assigned lead; completed history stays intact.'),
         const SizedBox(height: 18),
         DropdownButtonFormField<String>(value: role, decoration: const InputDecoration(labelText: 'Role'), items: ['Administrator', 'Lead', 'Technician'].map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(), onChanged: busy ? null : (r) => setState(() { role = r!; if (role != 'Technician') leadId = null; })),
@@ -266,12 +284,23 @@ class _AccountEditorState extends State<AccountEditor> {
           const Text('An unassigned technician cannot submit early replacements.'),
         ],
         const SizedBox(height: 20),
-        const Text('Building access', style: TextStyle(fontWeight: FontWeight.bold)),
-        if (role == 'Administrator') const Text('Administrators have access to all buildings.'),
-        for (final b in widget.buildings) CheckboxListTile(contentPadding: EdgeInsets.zero, title: Text('${b['code']} · ${b['name']}'), value: buildingIds.contains(b['id']), onChanged: busy || role == 'Administrator' ? null : (selected) => setState(() { if (selected == true) { buildingIds.add(b['id'] as int); } else { buildingIds.remove(b['id']); } })),
+        const Text('Building and production-line access', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        const Text('Grant a whole building, including future lines, or select individual lines. Selecting a line does not grant access to its siblings.'),
+        if (role == 'Administrator') const Text('Administrators have access to all buildings and lines.'),
+        for (final b in widget.buildings) ...[
+          CheckboxListTile(contentPadding: EdgeInsets.zero, title: Text('${b['code']} · ${b['name']}'), subtitle: const Text('Whole building — all current and future lines'), value: role == 'Administrator' || buildingIds.contains(b['id']), onChanged: busy || role == 'Administrator' ? null : (selected) => setState(() { if (selected == true) { buildingIds.add(b['id'] as int); } else { buildingIds.remove(b['id']); } })),
+          for (final line in widget.lines.where((l) => l['building_id'] == b['id'])) Padding(padding: const EdgeInsets.only(left: 24), child: CheckboxListTile(
+            key: ValueKey('line-access:${line['id']}'), contentPadding: EdgeInsets.zero,
+            title: Text('${b['code']} · ${line['code']}'),
+            subtitle: Text(role == 'Administrator' || buildingIds.contains(b['id']) ? 'Included through whole-building access' : 'This production line only'),
+            value: role == 'Administrator' || buildingIds.contains(b['id']) || lineIds.contains(line['id']),
+            onChanged: busy || role == 'Administrator' || buildingIds.contains(b['id']) ? null : (selected) => setState(() { if (selected == true) { lineIds.add(line['id'] as int); } else { lineIds.remove(line['id']); } }),
+          )),
+        ],
         if (error != null) Padding(padding: const EdgeInsets.only(top: 14), child: Text(error!, style: const TextStyle(color: Colors.red))),
       ]))),
-      actions: [TextButton(onPressed: busy ? null : () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: busy ? null : save, child: Text(busy ? 'Saving…' : 'Save account'))],
+      actions: [TextButton(onPressed: busy ? null : () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: busy ? null : save, child: Text(busy ? 'Saving…' : widget.creating ? 'Create account' : 'Save account'))],
     );
   }
 }

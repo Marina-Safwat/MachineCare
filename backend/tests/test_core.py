@@ -168,4 +168,104 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(Error): self.act('admin','edit_user',user_id=3,role='Technician',lead_id=None,building_ids=[1,3])
         with self.assertRaises(Error): self.act('admin','edit_user',user_id=3,role='Lead',lead_id=None,building_ids=[1,3])
 
+    def line_only(self,user_id=3,line_ids=None,lead_id=2):
+        self.act('admin','edit_user',user_id=user_id,role='Technician',lead_id=lead_id,building_ids=[],line_ids=[1] if line_ids is None else line_ids)
+        name='tech' if user_id==3 else 'other'
+        self.tokens[name]=self.store.login(name,'Example-long-password-2026')['token']
+    def test_line_only_scope_hides_siblings_and_direct_requests(self):
+        self.line_only()
+        state=self.store.state(self.tokens['tech'])
+        self.assertEqual([m['id'] for m in state['machines']],[1])
+        self.assertEqual([l['id'] for l in state['lines']],[1])
+        self.assertEqual([b['id'] for b in state['buildings']],[1])
+        self.assertEqual(state['user']['line_ids'],[1])
+        self.assertEqual(state['user']['building_ids'],[])
+        with self.assertRaises(Error): self.request(mid=2)
+        with self.assertRaises(Error): self.request(mid=3)
+        self.request()
+    def test_whole_building_grant_includes_new_lines(self):
+        self.act('admin','edit_user',user_id=3,role='Technician',lead_id=2,building_ids=[1],line_ids=[])
+        self.act('admin','line',building_id=1,code='L03')
+        self.tokens['tech']=self.store.login('tech','Example-long-password-2026')['token']
+        state=self.store.state(self.tokens['tech'])
+        self.assertEqual({l['code'] for l in state['lines']},{'L01','L02','L03'})
+    def test_line_grant_does_not_expand_to_new_sibling_lines(self):
+        self.line_only()
+        self.act('admin','line',building_id=1,code='L03')
+        self.assertEqual([l['id'] for l in self.store.state(self.tokens['tech'])['lines']],[1])
+    def test_invalid_line_grants_are_atomic(self):
+        for values in [[999],[True],['1'],None]:
+            with self.assertRaises(Error): self.act('admin','edit_user',user_id=3,role='Technician',lead_id=2,building_ids=[],line_ids=values)
+        self.assertEqual(len(self.store.state(self.tokens['tech'])['machines']),4)
+    def test_pending_early_work_blocks_line_access_removal(self):
+        self.line_only()
+        first=self.request();self.act('tech','complete',request_id=first['id'])
+        self.request(key='early-line',early_explanation='Failed seal')
+        with self.assertRaises(Error): self.act('admin','edit_user',user_id=3,role='Technician',lead_id=2,building_ids=[],line_ids=[])
+        self.assertEqual(self.store.state(self.tokens['tech'])['user']['line_ids'],[1])
+    def test_lead_line_coverage_and_future_building_semantics(self):
+        self.line_only(user_id=3);self.line_only(user_id=4)
+        self.act('admin','edit_user',user_id=2,role='Lead',lead_id=None,building_ids=[],line_ids=[1])
+        with self.assertRaises(Error): self.act('admin','edit_user',user_id=3,role='Technician',lead_id=2,building_ids=[],line_ids=[2])
+        self.act('admin','edit_user',user_id=2,role='Lead',lead_id=None,building_ids=[],line_ids=[1,2])
+        with self.assertRaises(Error): self.act('admin','edit_user',user_id=3,role='Technician',lead_id=2,building_ids=[1],line_ids=[])
+        with self.assertRaises(Error): self.act('admin','edit_user',user_id=2,role='Lead',lead_id=None,building_ids=[],line_ids=[2])
+    def test_line_scope_hides_other_request_and_history_records(self):
+        r=self.request(user='other',mid=2);self.act('other','complete',request_id=r['id'])
+        self.line_only()
+        state=self.store.state(self.tokens['tech'])
+        self.assertEqual(state['history'],[])
+        self.assertEqual(state['requests'],[])
+        with self.assertRaises(Error): self.act('tech','complete',request_id=r['id'])
+        self.assertEqual(len(self.store.state(self.tokens['admin'])['history']),1)
+    def test_create_account_with_line_scope_and_lead_coverage(self):
+        self.act('admin','user',username='line-user',password='Strong-temporary-password',role='Technician',lead_id=2,building_ids=[],line_ids=[2])
+        token=self.store.login('line-user','Strong-temporary-password')['token']
+        self.store.execute(token,'password',{'current_password':'Strong-temporary-password','new_password':'Strong-personal-password'})
+        token=self.store.login('line-user','Strong-personal-password')['token']
+        self.assertEqual([m['id'] for m in self.store.state(token)['machines']],[2])
+        with self.assertRaises(Error): self.act('admin','user',username='bad-line',password='Strong-temporary-password',role='Technician',lead_id=2,building_ids=[],line_ids=[999])
+        self.assertFalse(any(u['username']=='bad-line' for u in self.store.state(self.tokens['admin'])['users']))
+    def test_legacy_account_edit_preserves_line_grants(self):
+        self.line_only()
+        self.act('admin','edit_user',user_id=3,role='Technician',lead_id=2,building_ids=[])
+        self.assertEqual(self.store.state(self.tokens['tech'])['user']['line_ids'],[1])
+    def test_machine_move_removes_line_visibility_preserves_history(self):
+        self.line_only()
+        r=self.request();self.act('tech','complete',request_id=r['id'])
+        self.act('admin','machine',id=1,line_id=2,type_id=1,station='09',asset_tag='DEMO-001',serial='SAMPLE',status='Operating')
+        self.assertEqual(self.store.state(self.tokens['tech'])['machines'],[])
+        self.assertEqual(self.store.state(self.tokens['tech'])['history'],[])
+        self.assertEqual(len(self.store.state(self.tokens['admin'])['history']),1)
+    def test_line_move_cannot_break_assigned_lead_coverage(self):
+        self.line_only()
+        with self.assertRaises(Error): self.act('admin','line',id=1,building_id=2,code='L90')
+        self.assertEqual(next(l for l in self.store.state(self.tokens['admin'])['lines'] if l['id']==1)['building_id'],1)
+    def test_migration_preserves_v1_accounts_inventory_history_and_access(self):
+        r=self.request();self.act('tech','complete',request_id=r['id'])
+        before=self.store.state(self.tokens['admin'])
+        with self.store.tx() as db:
+            db.execute('DROP TABLE line_access');db.execute('PRAGMA user_version=1')
+        reopened=Store(self.store.path)
+        after=reopened.state(self.tokens['admin'])
+        self.assertEqual(after['history'],before['history'])
+        self.assertEqual(after['parts'],before['parts'])
+        self.assertEqual(after['users'],before['users'])
+        self.assertEqual(len(reopened.state(self.tokens['tech'])['machines']),4)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],2)
+    def test_migration_rerun_keeps_line_grants_and_version(self):
+        self.line_only()
+        reopened=Store(self.store.path)
+        self.assertEqual(reopened.state(self.tokens['tech'])['user']['line_ids'],[1])
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],2)
+    def test_http_forbidden_line_request_is_rejected(self):
+        self.line_only()
+        server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            req=Request(f'http://127.0.0.1:{server.server_port}/actions/request',data=json.dumps({'machine_id':2,'part_id':1,'quantity':1,'reason':'Forbidden sibling','operation_key':'http-forbidden'}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+self.tokens['tech']})
+            with self.assertRaises(HTTPError) as result:urlopen(req)
+            self.assertEqual(result.exception.code,403)
+            self.assertEqual(self.store.state(self.tokens['admin'])['requests'],[])
+        finally:server.shutdown();server.server_close();thread.join()
+
 if __name__=='__main__': unittest.main()

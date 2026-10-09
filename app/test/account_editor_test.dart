@@ -18,11 +18,12 @@ void main() {
     )));
     await tester.tap(find.text('Open editor'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('B03 · Building 3'));
     await tester.tap(find.text('B03 · Building 3'));
     await tester.pump();
     await tester.tap(find.text('Save account'));
     await tester.pumpAndSettle();
-    expect(saved, {'user_id': 3, 'role': 'Technician', 'lead_id': 2, 'building_ids': [1, 3]});
+    expect(saved, {'user_id': 3, 'role': 'Technician', 'lead_id': 2, 'building_ids': [1, 3], 'line_ids': []});
     expect(tester.takeException(), isNull);
   });
   testWidgets('Rejected account edit preserves selections and displays the server error', (tester) async {

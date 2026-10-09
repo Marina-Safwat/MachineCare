@@ -13,4 +13,4 @@ CREATE TABLE IF NOT EXISTS maintenance(id INTEGER PRIMARY KEY,request_id INTEGER
 CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY,part_id INTEGER NOT NULL REFERENCES parts(id),delta INTEGER NOT NULL,reason TEXT NOT NULL,actor_id INTEGER REFERENCES users(id),created TEXT NOT NULL,operation_key TEXT UNIQUE NOT NULL);
 CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY,user_id INTEGER REFERENCES users(id),message TEXT NOT NULL,created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor_id INTEGER REFERENCES users(id),action TEXT NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL);
-PRAGMA user_version=1;
+-- Schema version is managed by Store initialization and ordered migrations.
