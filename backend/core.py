@@ -6,6 +6,7 @@ from pathlib import Path
 import access_policy as scopes
 import catalog
 import purchasing
+import inventory_status
 
 class Error(Exception):
     def __init__(self, message, status=400):
@@ -38,7 +39,7 @@ class Store:
         try:
             db.execute('PRAGMA foreign_keys=ON')
             version=db.execute('PRAGMA user_version').fetchone()[0]
-            if version>4: raise Error('Database is newer than this application. Upgrade the app; do not downgrade.')
+            if version>5: raise Error('Database is newer than this application. Upgrade the app; do not downgrade.')
             db.executescript(Path(__file__).with_name('schema.sql').read_text())
             if version<1: db.execute('PRAGMA user_version=1')
             if version<2:
@@ -47,6 +48,8 @@ class Store:
                 db.executescript((Path(__file__).parent/'migrations'/'003_catalog_revision.sql').read_text())
             if version<4:
                 db.executescript((Path(__file__).parent/'migrations'/'004_purchasing.sql').read_text())
+            if version<5:
+                db.executescript((Path(__file__).parent/'migrations'/'005_inventory_alerts.sql').read_text())
         except Exception:
             if db.in_transaction: db.rollback()
             raise
@@ -59,6 +62,7 @@ class Store:
         try:
             db.execute('BEGIN IMMEDIATE')
             yield db
+            inventory_status.sync(db)
             db.commit()
         except sqlite3.IntegrityError as e:
             db.rollback()
@@ -107,7 +111,7 @@ class Store:
             if not scopes.covers(db,scopes.grants(db,tech['lead_id']),scopes.grants(db,tech['id'])):
                 raise Error('Moving this line would leave a lead without access to assigned technician lines. Update assignments first.')
     def public_part(self,db,p):
-        return {**dict(p),**purchasing.planning(db,p),'type_ids':[r[0] for r in db.execute('SELECT type_id FROM compatibility WHERE part_id=? ORDER BY type_id',(p['id'],))]}
+        return {**dict(p),**inventory_status.balance(db,p),**purchasing.planning(db,p),'type_ids':[r[0] for r in db.execute('SELECT type_id FROM compatibility WHERE part_id=? ORDER BY type_id',(p['id'],))]}
     def catalog_validation(self,fn,*args):
         try: return fn(*args)
         except catalog.CatalogError as e: raise Error(str(e)) from e
@@ -125,17 +129,25 @@ class Store:
                     part['last_replacement']=last
                     item['parts'].append(part)
                 machines.append(item)
+            inventory_status.sync(db)
             visible={m['id'] for m in machines}
             requests=[dict(r) for r in db.execute('SELECT r.*,u.username technician,p.name part FROM requests r JOIN users u ON u.id=r.technician_id JOIN parts p ON p.id=r.part_id ORDER BY r.id DESC') if r['machine_id'] in visible and (u['role']=='Administrator' or r['technician_id']==u['id'] or r['lead_id']==u['id'])]
             history=[dict(r) for r in db.execute('SELECT m.*,p.name part,u.username technician FROM maintenance m JOIN parts p ON p.id=m.part_id JOIN users u ON u.id=m.technician_id ORDER BY m.id DESC') if r['machine_id'] in visible]
             scope=scopes.grants(db,u['id'])
             accessible_lines=[dict(l) for l in db.execute('SELECT * FROM lines') if u['role']=='Administrator' or scopes.allows(scope,l['building_id'],l['id'])]
             building_ids=scope[0]|{l['building_id'] for l in accessible_lines}
-            return {**purchasing.snapshot(db,u),'user':self.public_scope(db,u),'machines':machines,'parts':[self.public_part(db,r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':accessible_lines, 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[self.public_scope(db,r) for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
+            return {**purchasing.snapshot(db,u),'alerts':inventory_status.snapshot(db,u),'user':self.public_scope(db,u),'machines':machines,'parts':[self.public_part(db,r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':accessible_lines, 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[self.public_scope(db,r) for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
     def execute(self,raw,action,d):
         with self.tx() as db:
             u=self.user(db,raw,action in ('password','logout'))
             uid=u['id']
+            if action=='alert_ack':
+                aid=integer(d,'alert_id')
+                alert=db.execute('SELECT * FROM alerts WHERE id=?',(aid,)).fetchone()
+                if not alert or not inventory_status.visible(db,u,alert): raise Error('Alert not found.',404)
+                if alert['resolved']: raise Error('This alert is already resolved.',409)
+                db.execute('INSERT OR IGNORE INTO alert_acknowledgements VALUES(?,?,?)',(aid,uid,now()))
+                return {'message':'Acknowledged for your account; the condition remains active.'}
             if action.startswith('reorder_'):
                 try: return purchasing.handle(db,u,action,d)
                 except purchasing.PurchaseError as e: raise Error(e.message,e.status) from e
@@ -267,6 +279,8 @@ class Store:
                         if type(delta)!=int or delta==0: raise Error('delta must be a nonzero integer.')
                     key=required(d,'operation_key'); reason=required(d,'reason')
                     if db.execute('SELECT 1 FROM ledger WHERE operation_key=?',(key,)).fetchone(): raise Error('This stock operation was already recorded.',409)
+                    part=db.execute('SELECT * FROM parts WHERE id=?',(pid,)).fetchone()
+                    if part and delta<0 and part['stock']+delta<inventory_status.balance(db,part)['reserved_quantity']: raise Error('Adjustment would consume reserved stock. Cancel approved work first.')
                     cur=db.execute('UPDATE parts SET stock=stock+? WHERE id=? AND stock+?>=0',(delta,pid,delta))
                     if cur.rowcount!=1: raise Error('Part missing or insufficient stock.')
                     db.execute('INSERT INTO ledger(part_id,delta,reason,actor_id,created,operation_key) VALUES(?,?,?,?,?,?)',(pid,delta,reason,uid,now(),key))
@@ -277,7 +291,7 @@ class Store:
                 if m['status']=='Retired': raise Error('Retired machines cannot receive replacement work.')
                 p=db.execute('SELECT p.* FROM parts p JOIN compatibility c ON c.part_id=p.id WHERE p.id=? AND c.type_id=?',(pid,m['type_id'])).fetchone()
                 if not p: raise Error('This part is incompatible with this machine.')
-                if qty>p['stock']: raise Error('Insufficient shared stock.')
+                if qty>inventory_status.balance(db,p)['available_quantity']: raise Error('Insufficient available stock; approved work reserves shared stock.')
                 reason=required(d,'reason'); key=required(d,'operation_key')
                 last=db.execute('SELECT MAX(replaced) FROM maintenance WHERE machine_id=? AND part_id=?',(mid,pid)).fetchone()[0]
                 early=bool(last and (datetime.now(timezone.utc)-datetime.fromisoformat(last)).total_seconds()<p['interval_days']*86400)
@@ -300,6 +314,9 @@ class Store:
                     if r['state']!='Pending': raise Error('Request is no longer pending.',409)
                     decision=required(d,'decision')
                     if decision not in ('Approved','Rejected'): raise Error('Invalid decision.')
+                    if decision=='Approved':
+                        part=db.execute('SELECT * FROM parts WHERE id=?',(r['part_id'],)).fetchone()
+                        if r['quantity']>inventory_status.balance(db,part)['available_quantity']: raise Error('Insufficient available stock to approve this request. Receive stock or release reservations first.')
                     db.execute('UPDATE requests SET state=?,reviewer_id=?,review_comment=?,reviewed=? WHERE id=?',(decision,uid,required(d,'comment'),now(),rid))
                     db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(r['technician_id'],f'Request #{rid}: {decision}',now()))
                 elif action=='cancel':

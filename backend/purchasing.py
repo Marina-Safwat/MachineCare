@@ -1,5 +1,6 @@
 """Purchasing transitions run inside the caller's atomic database transaction."""
 import json
+import inventory_status
 from datetime import datetime, timezone
 
 class PurchaseError(ValueError):
@@ -21,7 +22,7 @@ def integer(d,key,minimum=1):
 def planning(db,part):
     outstanding=db.execute("SELECT COALESCE(SUM(quantity-received_quantity),0) FROM reorders WHERE part_id=? AND state IN ('Approved','Ordered','Partially received')",(part['id'],)).fetchone()[0]
     pending=db.execute("SELECT COALESCE(SUM(quantity),0) FROM reorders WHERE part_id=? AND state='Requested'",(part['id'],)).fetchone()[0]
-    return {'outstanding_order_quantity':outstanding,'pending_reorder_quantity':pending,'suggested_order_quantity':max(0,part['target']-part['stock']-outstanding-pending)}
+    return {'outstanding_order_quantity':outstanding,'pending_reorder_quantity':pending,'suggested_order_quantity':max(0,part['target']-inventory_status.balance(db,part)['available_quantity']-outstanding-pending)}
 
 def snapshot(db,u):
     if u['role'] not in ('Lead','Administrator'):return {'reorders':[],'deliveries':[]}
@@ -44,9 +45,12 @@ def handle(db,u,action,d):
         part=db.execute('SELECT * FROM parts WHERE id=?',(pid,)).fetchone()
         if not part:raise PurchaseError('Part not found.',404)
         cur=db.execute('INSERT INTO reorders(part_id,requested_by,quantity,reason,supplier_snapshot,supplier_number_snapshot,unit_cost_snapshot,created,operation_key) VALUES(?,?,?,?,?,?,?,?,?)',(pid,uid,quantity,reason,part['supplier'],part['supplier_number'],part['cost'],now(),key))
-        rid=cur.lastrowid;admins(db,f'Reorder #{rid} requires approval.',uid)
-        audit(db,uid,action,{'reorder_id':rid,'part_id':pid,'quantity':quantity})
-        return {'id':rid,'state':'Requested'}
+        rid=cur.lastrowid;state='Approved' if u['role']=='Lead' else 'Requested'
+        if state=='Approved':
+            db.execute("UPDATE reorders SET state='Approved',reviewed_by=?,reviewed=?,review_comment='Lead request: approval not required' WHERE id=?",(uid,now(),rid))
+        admins(db,f'Reorder #{rid}: Lead request approved; ready for ordering.' if state=='Approved' else f'Reorder #{rid} requires approval.',uid)
+        audit(db,uid,action,{'reorder_id':rid,'part_id':pid,'quantity':quantity,'state':state,'approval_policy':'Lead bypass' if state=='Approved' else 'Separate administrator'})
+        return {'id':rid,'state':state}
     rid=integer(d,'reorder_id')
     r=db.execute('SELECT * FROM reorders WHERE id=?',(rid,)).fetchone()
     if not r:raise PurchaseError('Reorder not found.',404)

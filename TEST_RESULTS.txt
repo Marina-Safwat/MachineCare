@@ -1,8 +1,15 @@
+test_adjustment_cannot_consume_reserved_stock_but_receipt_adds_available (test_core.WorkflowTests.test_adjustment_cannot_consume_reserved_stock_but_receipt_adds_available) ... ok
+test_alert_machine_scope_and_ack_are_enforced (test_core.WorkflowTests.test_alert_machine_scope_and_ack_are_enforced) ... ok
+test_alerts_reservations_and_acknowledgement_survive_restart (test_core.WorkflowTests.test_alerts_reservations_and_acknowledgement_survive_restart) ... ok
+test_approved_work_reserves_cancel_releases_without_changing_stock (test_core.WorkflowTests.test_approved_work_reserves_cancel_releases_without_changing_stock) ... ok
 test_cancel_partial_order_keeps_received_stock_and_history (test_core.WorkflowTests.test_cancel_partial_order_keeps_received_stock_and_history) ... ok
 test_catalog_v2_upgrade_preserves_data_and_line_grants (test_core.WorkflowTests.test_catalog_v2_upgrade_preserves_data_and_line_grants) ... ok
 test_catalog_v3_restart_preserves_revisions (test_core.WorkflowTests.test_catalog_v3_restart_preserves_revisions) ... ok
 test_changed_interval_rechecked_at_completion (test_core.WorkflowTests.test_changed_interval_rechecked_at_completion) ... ok
 test_competing_normal_requests_cannot_bypass_early_review (test_core.WorkflowTests.test_competing_normal_requests_cannot_bypass_early_review) ... ok
+test_completion_consumes_own_reservation_and_keeps_others (test_core.WorkflowTests.test_completion_consumes_own_reservation_and_keeps_others) ... ok
+test_concurrent_cancel_and_complete_release_reservation_once (test_core.WorkflowTests.test_concurrent_cancel_and_complete_release_reservation_once) ... ok
+test_concurrent_pending_approvals_cannot_reserve_last_unit_twice (test_core.WorkflowTests.test_concurrent_pending_approvals_cannot_reserve_last_unit_twice) ... ok
 test_create_account_with_line_scope_and_lead_coverage (test_core.WorkflowTests.test_create_account_with_line_scope_and_lead_coverage) ... ok
 test_disable_revokes_sessions (test_core.WorkflowTests.test_disable_revokes_sessions) ... ok
 test_duplicate_reorder_and_receipt_keys_and_references (test_core.WorkflowTests.test_duplicate_reorder_and_receipt_keys_and_references) ... ok
@@ -15,13 +22,15 @@ test_edit_account_rejects_nonadmin_and_self_changes (test_core.WorkflowTests.tes
 test_edit_account_updates_access_revokes_session_and_preserves_password (test_core.WorkflowTests.test_edit_account_updates_access_revokes_session_and_preserves_password) ... ok
 test_edit_account_validates_lead_and_building_ids_atomically (test_core.WorkflowTests.test_edit_account_validates_lead_and_building_ids_atomically) ... ok
 test_edit_lead_cannot_orphan_assigned_technicians (test_core.WorkflowTests.test_edit_lead_cannot_orphan_assigned_technicians) ... ok
-test_http_forbidden_line_request_is_rejected (test_core.WorkflowTests.test_http_forbidden_line_request_is_rejected) ... MachineCare pilot API: http://127.0.0.1:37223
+test_existing_overcommitted_work_is_visible_and_can_recover (test_core.WorkflowTests.test_existing_overcommitted_work_is_visible_and_can_recover) ... ok
+test_failed_completion_preserves_reservation (test_core.WorkflowTests.test_failed_completion_preserves_reservation) ... ok
+test_http_forbidden_line_request_is_rejected (test_core.WorkflowTests.test_http_forbidden_line_request_is_rejected) ... MachineCare pilot API: http://127.0.0.1:39825
 ok
-test_http_part_update_and_permission_enforcement (test_core.WorkflowTests.test_http_part_update_and_permission_enforcement) ... MachineCare pilot API: http://127.0.0.1:35773
+test_http_part_update_and_permission_enforcement (test_core.WorkflowTests.test_http_part_update_and_permission_enforcement) ... MachineCare pilot API: http://127.0.0.1:38933
 ok
-test_http_purchase_flow_through_partial_and_complete_receiving (test_core.WorkflowTests.test_http_purchase_flow_through_partial_and_complete_receiving) ... MachineCare pilot API: http://127.0.0.1:39593
+test_http_purchase_flow_through_partial_and_complete_receiving (test_core.WorkflowTests.test_http_purchase_flow_through_partial_and_complete_receiving) ... MachineCare pilot API: http://127.0.0.1:39751
 ok
-test_http_technician_and_lead_flow (test_core.WorkflowTests.test_http_technician_and_lead_flow) ... MachineCare pilot API: http://127.0.0.1:33919
+test_http_technician_and_lead_flow (test_core.WorkflowTests.test_http_technician_and_lead_flow) ... MachineCare pilot API: http://127.0.0.1:44713
 ok
 test_identity_last_date_and_duplicate_completion (test_core.WorkflowTests.test_identity_last_date_and_duplicate_completion) ... ok
 test_incompatible_part (test_core.WorkflowTests.test_incompatible_part) ... ok
@@ -30,12 +39,14 @@ test_invalid_purchase_inputs_and_cancel_reasons (test_core.WorkflowTests.test_in
 test_last_item_concurrency (test_core.WorkflowTests.test_last_item_concurrency) ... ok
 test_lead_cancellation_limited_to_own_preorder_requests (test_core.WorkflowTests.test_lead_cancellation_limited_to_own_preorder_requests) ... ok
 test_lead_line_coverage_and_future_building_semantics (test_core.WorkflowTests.test_lead_line_coverage_and_future_building_semantics) ... ok
+test_lead_reorder_bypass_is_audited_without_stock_or_ordering (test_core.WorkflowTests.test_lead_reorder_bypass_is_audited_without_stock_or_ordering) ... ok
 test_legacy_account_edit_preserves_line_grants (test_core.WorkflowTests.test_legacy_account_edit_preserves_line_grants) ... ok
 test_line_grant_does_not_expand_to_new_sibling_lines (test_core.WorkflowTests.test_line_grant_does_not_expand_to_new_sibling_lines) ... ok
 test_line_move_cannot_break_assigned_lead_coverage (test_core.WorkflowTests.test_line_move_cannot_break_assigned_lead_coverage) ... ok
 test_line_only_scope_hides_siblings_and_direct_requests (test_core.WorkflowTests.test_line_only_scope_hides_siblings_and_direct_requests) ... ok
 test_line_scope_hides_other_request_and_history_records (test_core.WorkflowTests.test_line_scope_hides_other_request_and_history_records) ... ok
 test_logout_and_expiration (test_core.WorkflowTests.test_logout_and_expiration) ... ok
+test_low_alert_deduplicates_acknowledges_per_user_and_recurs (test_core.WorkflowTests.test_low_alert_deduplicates_acknowledges_per_user_and_recurs) ... ok
 test_machine_move_removes_line_visibility_preserves_history (test_core.WorkflowTests.test_machine_move_removes_line_visibility_preserves_history) ... ok
 test_migration_preserves_v1_accounts_inventory_history_and_access (test_core.WorkflowTests.test_migration_preserves_v1_accounts_inventory_history_and_access) ... ok
 test_migration_rerun_keeps_line_grants_and_version (test_core.WorkflowTests.test_migration_rerun_keeps_line_grants_and_version) ... ok
@@ -44,6 +55,7 @@ test_move_preserves_location_snapshot (test_core.WorkflowTests.test_move_preserv
 test_no_negative_adjustments (test_core.WorkflowTests.test_no_negative_adjustments) ... ok
 test_optional_line_and_duplicate_sku (test_core.WorkflowTests.test_optional_line_and_duplicate_sku) ... ok
 test_over_receiving_and_concurrent_final_deliveries (test_core.WorkflowTests.test_over_receiving_and_concurrent_final_deliveries) ... ok
+test_overdue_alert_requires_known_history_and_resolves_after_completion (test_core.WorkflowTests.test_overdue_alert_requires_known_history_and_resolves_after_completion) ... ok
 test_part_compatibility_addition_uses_same_shared_balance (test_core.WorkflowTests.test_part_compatibility_addition_uses_same_shared_balance) ... ok
 test_part_compatibility_removal_checks_approved_and_pending_work (test_core.WorkflowTests.test_part_compatibility_removal_checks_approved_and_pending_work) ... ok
 test_part_concurrent_metadata_edit_rejects_stale_writer (test_core.WorkflowTests.test_part_concurrent_metadata_edit_rejects_stale_writer) ... ok
@@ -53,23 +65,27 @@ test_part_edit_preserves_stock_ledger_and_completed_records (test_core.WorkflowT
 test_part_edit_rejects_duplicate_sku_and_invalid_metadata_atomically (test_core.WorkflowTests.test_part_edit_rejects_duplicate_sku_and_invalid_metadata_atomically) ... ok
 test_partial_and_final_deliveries_record_atomic_stock_and_identity (test_core.WorkflowTests.test_partial_and_final_deliveries_record_atomic_stock_and_identity) ... ok
 test_pending_early_work_blocks_line_access_removal (test_core.WorkflowTests.test_pending_early_work_blocks_line_access_removal) ... ok
+test_pending_work_reserves_only_at_approval_and_rechecks_capacity (test_core.WorkflowTests.test_pending_work_reserves_only_at_approval_and_rechecks_capacity) ... ok
 test_purchase_notifications_and_audit_not_duplicated_by_retry (test_core.WorkflowTests.test_purchase_notifications_and_audit_not_duplicated_by_retry) ... ok
 test_purchase_revision_blocks_stale_approval_and_ordering (test_core.WorkflowTests.test_purchase_revision_blocks_stale_approval_and_ordering) ... ok
 test_purchase_snapshots_survive_part_edits_and_ignore_spoofed_identity (test_core.WorkflowTests.test_purchase_snapshots_survive_part_edits_and_ignore_spoofed_identity) ... ok
 test_purchasing_roles_and_self_approval (test_core.WorkflowTests.test_purchasing_roles_and_self_approval) ... ok
 test_receipts_during_catalog_edit_are_not_overwritten (test_core.WorkflowTests.test_receipts_during_catalog_edit_are_not_overwritten) ... ok
+test_receiving_purchase_resolves_available_stock_alert (test_core.WorkflowTests.test_receiving_purchase_resolves_available_stock_alert) ... ok
 test_rejected_and_unordered_reorders_cannot_receive (test_core.WorkflowTests.test_rejected_and_unordered_reorders_cannot_receive) ... ok
 test_rejection_blocks_completion (test_core.WorkflowTests.test_rejection_blocks_completion) ... ok
 test_reorder_approval_and_ordering_do_not_change_stock (test_core.WorkflowTests.test_reorder_approval_and_ordering_do_not_change_stock) ... ok
 test_reorder_suggestion_accounts_for_pending_and_outstanding (test_core.WorkflowTests.test_reorder_suggestion_accounts_for_pending_and_outstanding) ... ok
 test_reset_forces_change_and_revokes (test_core.WorkflowTests.test_reset_forces_change_and_revokes) ... ok
+test_retirement_and_catalog_interval_resolve_overdue_alert (test_core.WorkflowTests.test_retirement_and_catalog_interval_resolve_overdue_alert) ... ok
 test_role_and_assignment_permissions (test_core.WorkflowTests.test_role_and_assignment_permissions) ... ok
 test_type_rename_checks_permission_duplicate_name_and_revision (test_core.WorkflowTests.test_type_rename_checks_permission_duplicate_name_and_revision) ... ok
 test_type_rename_preserves_links_and_historical_location (test_core.WorkflowTests.test_type_rename_preserves_links_and_historical_location) ... ok
 test_v3_migration_and_v4_restarts_preserve_orders (test_core.WorkflowTests.test_v3_migration_and_v4_restarts_preserve_orders) ... ok
+test_v4_upgrade_approves_existing_lead_requests_once_and_preserves_stock (test_core.WorkflowTests.test_v4_upgrade_approves_existing_lead_requests_once_and_preserves_stock) ... ok
 test_whole_building_grant_includes_new_lines (test_core.WorkflowTests.test_whole_building_grant_includes_new_lines) ... ok
 
 ----------------------------------------------------------------------
-Ran 66 tests in 45.070s
+Ran 82 tests in 67.437s
 
 OK

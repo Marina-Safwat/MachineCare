@@ -14,10 +14,10 @@ class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.store=Store(Path(self.tmp.name)/'test.db'); self.store.seed()
         with self.store.tx() as db:
-            for name,role,lead in [('admin','Administrator',None),('lead','Lead',None),('tech','Technician',2),('other','Technician',2)]: db.execute('INSERT INTO users(username,password,role,lead_id,must_change) VALUES(?,?,?,?,0)',(name,self.hashed,role,lead))
+            for name,role,lead in [('admin','Administrator',None),('lead','Lead',None),('tech','Technician',2),('other','Technician',2),('reviewer','Administrator',None)]: db.execute('INSERT INTO users(username,password,role,lead_id,must_change) VALUES(?,?,?,?,0)',(name,self.hashed,role,lead))
             for uid in (2,3,4):
                 for bid in (1,3): db.execute('INSERT INTO access VALUES(?,?)',(uid,bid))
-        self.tokens={u:self.store.login(u,'Example-long-password-2026')['token'] for u in ('admin','lead','tech','other')}
+        self.tokens={u:self.store.login(u,'Example-long-password-2026')['token'] for u in ('admin','lead','tech','other','reviewer')}
     def tearDown(self): self.tmp.cleanup()
     def act(self,user,action,**d): return self.store.execute(self.tokens[user],action,d)
     def request(self,user='tech',mid=1,pid=1,**extra):
@@ -82,12 +82,13 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(Error): self.act('admin','receipt',part_id=1,quantity=2,reason='delivery',operation_key='delivery')
     def test_last_item_concurrency(self):
         with self.store.tx() as db: db.execute('UPDATE parts SET stock=1 WHERE id=1')
-        one=self.request(); two=self.request(user='other',mid=3)
-        def finish(pair):
-            try: self.act(pair[0],'complete',request_id=pair[1]['id']); return True
-            except Error: return False
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool: outcomes=list(pool.map(finish,[('tech',one),('other',two)]))
-        self.assertEqual(sum(outcomes),1)
+        def reserve(user):
+            try: return self.request(user=user,mid=1 if user=='tech' else 3)
+            except Error: return None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool: outcomes=list(pool.map(reserve,['tech','other']))
+        self.assertEqual(sum(r is not None for r in outcomes),1)
+        for user,r in zip(['tech','other'],outcomes):
+            if r: self.act(user,'complete',request_id=r['id'])
         with self.store.tx() as db:
             self.assertEqual(db.execute('SELECT stock FROM parts WHERE id=1').fetchone()[0],0)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM maintenance').fetchone()[0],1)
@@ -252,12 +253,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(after['parts'],before['parts'])
         self.assertEqual(after['users'],before['users'])
         self.assertEqual(len(reopened.state(self.tokens['tech'])['machines']),4)
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],4)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],5)
     def test_migration_rerun_keeps_line_grants_and_version(self):
         self.line_only()
         reopened=Store(self.store.path)
         self.assertEqual(reopened.state(self.tokens['tech'])['user']['line_ids'],[1])
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],4)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],5)
     def test_http_forbidden_line_request_is_rejected(self):
         self.line_only()
         server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -387,11 +388,11 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==1)['name'],'HTTP updated part')
         finally:server.shutdown();server.server_close();thread.join()
 
-    def reorder(self,user='lead',quantity=10,key='purchase-first',part_id=1,**extra):
+    def reorder(self,user='admin',quantity=10,key='purchase-first',part_id=1,**extra):
         return self.act(user,'reorder_request',part_id=part_id,quantity=quantity,reason='Replenish spare parts',operation_key=key,**extra)
     def order_ready(self,quantity=10,key='purchase-first',part_id=1):
         r=self.reorder(quantity=quantity,key=key,part_id=part_id)
-        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Approved replenishment')
+        self.act('reviewer','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Approved replenishment')
         self.act('admin','reorder_order',reorder_id=r['id'],revision=1,po_reference='PO-001')
         return r['id']
     def receive(self,rid,quantity=4,reference='SLIP-1',key='delivery-first',user='admin',**extra):
@@ -400,7 +401,7 @@ class WorkflowTests(unittest.TestCase):
         before=self.store.state(self.tokens['admin'])['parts']
         r=self.reorder()
         self.assertEqual(self.store.state(self.tokens['admin'])['reorders'][0]['state'],'Requested')
-        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Yes')
+        self.act('reviewer','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Yes')
         self.act('admin','reorder_order',reorder_id=r['id'],revision=1,po_reference='PO-123')
         after=self.store.state(self.tokens['admin'])['parts']
         self.assertEqual([p['stock'] for p in after],[p['stock'] for p in before])
@@ -451,11 +452,11 @@ class WorkflowTests(unittest.TestCase):
     def test_rejected_and_unordered_reorders_cannot_receive(self):
         r=self.reorder()
         with self.assertRaises(Error):self.receive(r['id'])
-        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Rejected',comment='Not needed')
+        self.act('reviewer','reorder_review',reorder_id=r['id'],revision=0,decision='Rejected',comment='Not needed')
         with self.assertRaises(Error):self.receive(r['id'])
         with self.assertRaises(Error):self.act('admin','reorder_order',reorder_id=r['id'],revision=1,po_reference='PO')
         approved=self.reorder(key='approved')
-        self.act('admin','reorder_review',reorder_id=approved['id'],revision=0,decision='Approved',comment='Yes')
+        self.act('reviewer','reorder_review',reorder_id=approved['id'],revision=0,decision='Approved',comment='Yes')
         with self.assertRaises(Error):self.receive(approved['id'],key='approved-delivery')
     def test_cancel_partial_order_keeps_received_stock_and_history(self):
         rid=self.order_ready()
@@ -468,7 +469,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(state['deliveries']),1)
         with self.assertRaises(Error):self.receive(rid,quantity=7,reference='SLIP-2',key='late')
     def test_lead_cancellation_limited_to_own_preorder_requests(self):
-        r=self.reorder()
+        r=self.reorder(user='lead')
         self.act('lead','reorder_cancel',reorder_id=r['id'],revision=0,reason='No longer needed')
         r=self.reorder(user='admin',key='another-requester')
         with self.assertRaises(Error):self.act('lead','reorder_cancel',reorder_id=r['id'],revision=0,reason='Not mine')
@@ -476,8 +477,8 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(Error):self.act('lead','reorder_cancel',reorder_id=rid,revision=2,reason='Already ordered')
     def test_purchase_revision_blocks_stale_approval_and_ordering(self):
         r=self.reorder()
-        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='First')
-        with self.assertRaises(Error) as caught:self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Rejected',comment='Stale')
+        self.act('reviewer','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='First')
+        with self.assertRaises(Error) as caught:self.act('reviewer','reorder_review',reorder_id=r['id'],revision=0,decision='Rejected',comment='Stale')
         self.assertEqual(caught.exception.status,409)
         with self.assertRaises(Error):self.act('admin','reorder_order',reorder_id=r['id'],revision=0,po_reference='PO-stale')
     def test_reorder_suggestion_accounts_for_pending_and_outstanding(self):
@@ -485,13 +486,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(part()['suggested_order_quantity'],8)
         r=self.reorder(quantity=5)
         self.assertEqual(part()['pending_reorder_quantity'],5);self.assertEqual(part()['suggested_order_quantity'],3)
-        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Yes')
+        self.act('reviewer','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Yes')
         self.assertEqual(part()['pending_reorder_quantity'],0);self.assertEqual(part()['outstanding_order_quantity'],5)
         self.act('admin','reorder_order',reorder_id=r['id'],revision=1,po_reference='PO')
         self.receive(r['id'],quantity=2)
         self.assertEqual(part()['outstanding_order_quantity'],3);self.assertEqual(part()['stock'],14);self.assertEqual(part()['suggested_order_quantity'],3)
     def test_purchase_snapshots_survive_part_edits_and_ignore_spoofed_identity(self):
-        r=self.reorder(requested_by=4,unit_cost_snapshot=0,supplier_snapshot='Spoof')
+        r=self.reorder(user='lead',requested_by=4,unit_cost_snapshot=0,supplier_snapshot='Spoof')
         self.act('admin','edit_part',**self.edit_part_data(supplier='New supplier',cost=99))
         saved=self.store.state(self.tokens['admin'])['reorders'][0]
         self.assertEqual(saved['requested_by'],2);self.assertEqual(saved['unit_cost_snapshot'],24.5);self.assertEqual(saved['supplier_snapshot'],'')
@@ -514,14 +515,14 @@ class WorkflowTests(unittest.TestCase):
         before=self.store.state(self.tokens['admin'])
         reopened=Store(self.store.path)
         self.assertEqual(reopened.state(self.tokens['admin']),before)
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],4)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],5)
     def test_purchase_notifications_and_audit_not_duplicated_by_retry(self):
         r=self.reorder()
         admins=self.store.state(self.tokens['admin'])['notifications']
         with self.assertRaises(Error):self.reorder()
         self.assertEqual(self.store.state(self.tokens['admin'])['notifications'],admins)
-        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Yes')
-        self.assertTrue(any('Approved' in n['message'] for n in self.store.state(self.tokens['lead'])['notifications']))
+        self.act('reviewer','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Yes')
+        self.assertTrue(any('Approved' in n['message'] for n in self.store.state(self.tokens['admin'])['notifications']))
         with self.store.tx() as db:self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='reorder_request'").fetchone()[0],1)
     def test_http_purchase_flow_through_partial_and_complete_receiving(self):
         server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -530,12 +531,170 @@ class WorkflowTests(unittest.TestCase):
             with urlopen(req) as response:return json.load(response)
         try:
             r=api('reorder_request',{'part_id':1,'quantity':5,'reason':'HTTP replenish','operation_key':'http-order'},'lead')
-            api('reorder_review',{'reorder_id':r['id'],'revision':0,'decision':'Approved','comment':'Approved'},'admin')
-            api('reorder_order',{'reorder_id':r['id'],'revision':1,'po_reference':'HTTP-PO'},'admin')
+            self.assertEqual(r['state'],'Approved')
+            api('reorder_order',{'reorder_id':r['id'],'revision':0,'po_reference':'HTTP-PO'},'admin')
             result=api('reorder_receive',{'reorder_id':r['id'],'quantity':2,'delivery_reference':'HTTP-SLIP1','operation_key':'http-delivery1'},'admin')
             self.assertEqual(result['state'],'Partially received')
             result=api('reorder_receive',{'reorder_id':r['id'],'quantity':3,'delivery_reference':'HTTP-SLIP2','operation_key':'http-delivery2'},'admin')
             self.assertEqual(result['state'],'Received')
         finally:server.shutdown();server.server_close();thread.join()
+
+    def part_balance(self,pid=1):
+        return next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==pid)
+    def active_alerts(self,user='admin',kind=None):
+        return [a for a in self.store.state(self.tokens[user])['alerts'] if a['resolved'] is None and (kind is None or a['kind']==kind)]
+    def test_lead_reorder_bypass_is_audited_without_stock_or_ordering(self):
+        r=self.reorder(user='lead',requested_by=1,state='Requested')
+        self.assertEqual(r['state'],'Approved')
+        saved=self.store.state(self.tokens['admin'])['reorders'][0]
+        self.assertEqual(saved['reviewed_by'],2);self.assertEqual(saved['revision'],0)
+        self.assertEqual(self.part_balance()['stock'],12)
+        self.assertTrue(any('ready for ordering' in n['message'] for n in self.store.state(self.tokens['admin'])['notifications']))
+        with self.assertRaises(Error): self.act('lead','reorder_order',reorder_id=r['id'],revision=0,po_reference='PO')
+        with self.assertRaises(Error): self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Rejected',comment='Review no longer needed')
+        self.act('admin','reorder_order',reorder_id=r['id'],revision=0,po_reference='LEAD-PO')
+        self.receive(r['id'],quantity=10)
+        self.assertEqual(self.part_balance()['stock'],22)
+        with self.store.tx() as db:
+            detail=json.loads(db.execute("SELECT detail FROM audit WHERE action='reorder_request'").fetchone()[0])
+            self.assertEqual(detail['approval_policy'],'Lead bypass')
+    def test_approved_work_reserves_cancel_releases_without_changing_stock(self):
+        r=self.act('tech','request',machine_id=1,part_id=1,quantity=7,reason='Service',operation_key='reserve-seven')
+        p=self.part_balance();self.assertEqual((p['stock'],p['reserved_quantity'],p['available_quantity']),(12,7,5))
+        self.assertEqual(p['suggested_order_quantity'],15)
+        self.act('tech','cancel',request_id=r['id'])
+        p=self.part_balance();self.assertEqual((p['stock'],p['reserved_quantity'],p['available_quantity']),(12,0,12))
+    def test_completion_consumes_own_reservation_and_keeps_others(self):
+        one=self.request();two=self.request(user='other',mid=3)
+        self.act('tech','complete',request_id=one['id'])
+        p=self.part_balance();self.assertEqual((p['stock'],p['reserved_quantity'],p['available_quantity']),(11,1,10))
+        self.act('other','complete',request_id=two['id'])
+        self.assertEqual(self.part_balance()['reserved_quantity'],0)
+    def test_pending_work_reserves_only_at_approval_and_rechecks_capacity(self):
+        done=self.request();self.act('tech','complete',request_id=done['id'])
+        early=self.act('tech','request',machine_id=1,part_id=1,quantity=11,reason='Failure',early_explanation='Broken seal',operation_key='early-eleven')
+        self.assertEqual(self.part_balance()['reserved_quantity'],0)
+        other=self.act('other','request',machine_id=3,part_id=1,quantity=11,reason='Service',operation_key='other-eleven')
+        with self.assertRaises(Error):self.act('lead','review',request_id=early['id'],decision='Approved',comment='Repair')
+        self.act('other','cancel',request_id=other['id'])
+        self.act('lead','review',request_id=early['id'],decision='Approved',comment='Repair')
+        self.assertEqual(self.part_balance()['reserved_quantity'],11)
+        self.act('tech','cancel',request_id=early['id'])
+        self.assertEqual(self.part_balance()['reserved_quantity'],0)
+    def test_adjustment_cannot_consume_reserved_stock_but_receipt_adds_available(self):
+        self.act('tech','request',machine_id=1,part_id=1,quantity=10,reason='Service',operation_key='reserve-ten')
+        with self.assertRaises(Error):self.act('admin','adjust',part_id=1,delta=-3,reason='Count',operation_key='bad-adjust')
+        self.act('admin','adjust',part_id=1,delta=-2,reason='Count',operation_key='good-adjust')
+        self.act('admin','receipt',part_id=1,quantity=3,reason='Delivery',operation_key='after-reserve')
+        p=self.part_balance();self.assertEqual((p['stock'],p['reserved_quantity'],p['available_quantity']),(13,10,3))
+    def test_failed_completion_preserves_reservation(self):
+        one=self.request(key='first');two=self.request(key='second')
+        self.act('tech','complete',request_id=one['id'])
+        with self.assertRaises(Error):self.act('tech','complete',request_id=two['id'])
+        self.assertEqual(self.part_balance()['reserved_quantity'],1)
+    def test_low_alert_deduplicates_acknowledges_per_user_and_recurs(self):
+        r=self.act('tech','request',machine_id=1,part_id=1,quantity=7,reason='Service',operation_key='low')
+        alert=next(a for a in self.active_alerts(kind='Low stock') if a['part_id']==1)
+        for _ in range(3):
+            self.assertEqual(len([a for a in self.active_alerts(kind='Low stock') if a['part_id']==1]),1)
+        self.act('tech','alert_ack',alert_id=alert['id']);self.act('tech','alert_ack',alert_id=alert['id'])
+        self.assertEqual(next(a for a in self.active_alerts('tech') if a['id']==alert['id'])['acknowledged'],1)
+        self.assertEqual(next(a for a in self.active_alerts('lead') if a['id']==alert['id'])['acknowledged'],0)
+        self.act('tech','cancel',request_id=r['id'])
+        old=next(a for a in self.store.state(self.tokens['tech'])['alerts'] if a['id']==alert['id'])
+        self.assertIsNotNone(old['resolved'])
+        with self.assertRaises(Error):self.act('tech','alert_ack',alert_id=alert['id'])
+        self.act('tech','request',machine_id=1,part_id=1,quantity=7,reason='Service',operation_key='low-again')
+        new=next(a for a in self.active_alerts('tech',kind='Low stock') if a['part_id']==1)
+        self.assertNotEqual(new['id'],alert['id']);self.assertEqual(new['acknowledged'],0)
+    def make_overdue(self,mid=1):
+        r=self.request(mid=mid,key='overdue-'+str(mid));self.act('tech','complete',request_id=r['id'])
+        old=(datetime.now(timezone.utc)-timedelta(days=100)).isoformat()
+        with self.store.tx() as db: db.execute('UPDATE maintenance SET replaced=? WHERE request_id=?',(old,r['id']))
+        return r
+    def test_overdue_alert_requires_known_history_and_resolves_after_completion(self):
+        self.assertEqual(self.active_alerts(kind='Overdue maintenance'),[])
+        self.make_overdue()
+        alerts=self.active_alerts(kind='Overdue maintenance');self.assertEqual(len(alerts),1)
+        self.act('tech','alert_ack',alert_id=alerts[0]['id'])
+        r=self.request(key='fix-overdue');self.act('tech','complete',request_id=r['id'])
+        self.assertEqual(self.active_alerts(kind='Overdue maintenance'),[])
+    def test_alert_machine_scope_and_ack_are_enforced(self):
+        self.make_overdue(mid=3)
+        alert=self.active_alerts(kind='Overdue maintenance')[0]
+        with self.store.tx() as db:db.execute('DELETE FROM access WHERE user_id=3 AND building_id=3')
+        self.assertFalse(any(a['id']==alert['id'] for a in self.store.state(self.tokens['tech'])['alerts']))
+        with self.assertRaises(Error) as e:self.act('tech','alert_ack',alert_id=alert['id'])
+        self.assertEqual(e.exception.status,404)
+        self.assertTrue(any(a['id']==alert['id'] for a in self.store.state(self.tokens['admin'])['alerts']))
+    def test_retirement_and_catalog_interval_resolve_overdue_alert(self):
+        self.make_overdue()
+        self.assertEqual(len(self.active_alerts(kind='Overdue maintenance')),1)
+        self.act('admin','edit_part',**self.edit_part_data(interval_days=200))
+        self.assertEqual(self.active_alerts(kind='Overdue maintenance'),[])
+        self.act('admin','edit_part',**self.edit_part_data(interval_days=90,revision=1))
+        self.assertEqual(len(self.active_alerts(kind='Overdue maintenance')),1)
+        self.act('admin','machine',id=1,line_id=1,type_id=1,station='01',asset_tag='DEMO-001',serial='SAMPLE',status='Retired')
+        self.assertEqual(self.active_alerts(kind='Overdue maintenance'),[])
+    def test_existing_overcommitted_work_is_visible_and_can_recover(self):
+        self.act('tech','request',machine_id=1,part_id=1,quantity=12,reason='Service',operation_key='legacy')
+        with self.store.tx() as db:db.execute('UPDATE parts SET stock=5 WHERE id=1')
+        self.assertEqual(self.part_balance()['reservation_shortfall'],7)
+        self.assertEqual(len(self.active_alerts(kind='Reservation shortfall')),1)
+        with self.assertRaises(Error):self.request(user='other',mid=3)
+        self.act('admin','receipt',part_id=1,quantity=7,reason='Recover legacy balance',operation_key='recover')
+        self.assertEqual(self.part_balance()['reservation_shortfall'],0)
+        self.assertEqual(self.active_alerts(kind='Reservation shortfall'),[])
+    def test_alerts_reservations_and_acknowledgement_survive_restart(self):
+        self.act('tech','request',machine_id=1,part_id=1,quantity=7,reason='Service',operation_key='restart')
+        a=next(a for a in self.active_alerts(kind='Low stock') if a['part_id']==1)
+        self.act('admin','alert_ack',alert_id=a['id'])
+        before=self.store.state(self.tokens['admin']);reopened=Store(self.store.path)
+        self.assertEqual(reopened.state(self.tokens['admin']),before)
+    def test_v4_upgrade_approves_existing_lead_requests_once_and_preserves_stock(self):
+        import sqlite3
+        r=self.reorder(user='lead')
+        db=sqlite3.connect(self.store.path)
+        try:
+            db.execute('DROP TABLE alert_acknowledgements');db.execute('DROP TABLE alerts')
+            db.execute("UPDATE reorders SET state='Requested',reviewed_by=NULL,reviewed=NULL,review_comment=NULL WHERE id=?",(r['id'],))
+            db.execute('PRAGMA user_version=4');db.commit()
+        finally:db.close()
+        self.store=Store(self.store.path)
+        self.assertEqual(self.part_balance()['stock'],12)
+        order=self.store.state(self.tokens['admin'])['reorders'][0]
+        self.assertEqual(order['state'],'Approved');self.assertEqual(order['revision'],1)
+        self.store=Store(self.store.path)
+        with self.store.tx() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='lead_reorder_policy_upgrade'").fetchone()[0],1)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],5)
+    def test_receiving_purchase_resolves_available_stock_alert(self):
+        self.act('tech','request',machine_id=1,part_id=1,quantity=7,reason='Service',operation_key='reserve-for-receipt')
+        rid=self.order_ready(quantity=2,key='supply')
+        self.receive(rid,quantity=2)
+        p=self.part_balance();self.assertEqual((p['stock'],p['reserved_quantity'],p['available_quantity']),(14,7,7))
+        self.assertFalse(any(a['part_id']==1 for a in self.active_alerts(kind='Low stock')))
+
+    def test_concurrent_pending_approvals_cannot_reserve_last_unit_twice(self):
+        done=self.request();self.act('tech','complete',request_id=done['id'])
+        with self.store.tx() as db:db.execute('UPDATE parts SET stock=1 WHERE id=1')
+        pending=[self.request(user=user,key='early-'+user,early_explanation='Failed seal') for user in ['tech','other']]
+        def approve(r):
+            try:self.act('lead','review',request_id=r['id'],decision='Approved',comment='Repair');return True
+            except Error:return False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(approve,pending))
+        self.assertEqual(sum(results),1)
+        p=self.part_balance();self.assertEqual((p['stock'],p['reserved_quantity'],p['available_quantity']),(1,1,0))
+    def test_concurrent_cancel_and_complete_release_reservation_once(self):
+        r=self.request()
+        def transition(action):
+            try:self.act('tech',action,request_id=r['id']);return True
+            except Error:return False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(transition,['complete','cancel']))
+        self.assertEqual(sum(results),1)
+        state=self.store.state(self.tokens['admin']);row=next(x for x in state['requests'] if x['id']==r['id'])
+        p=self.part_balance();self.assertEqual(p['reserved_quantity'],0)
+        self.assertEqual(p['stock'],11 if row['state']=='Completed' else 12)
+        self.assertEqual(len(state['history']),1 if row['state']=='Completed' else 0)
 
 if __name__=='__main__': unittest.main()

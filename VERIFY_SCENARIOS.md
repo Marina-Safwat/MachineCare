@@ -1,28 +1,49 @@
-# Check the purchasing update
+# Local verification scenarios
 
-Use a disposable copy of your database for these scenarios. Purchases and deliveries really change stock; do not enter fictional deliveries in your live inventory. Record starting stock S for a test part. Refresh after switching accounts or browser sessions.
+Use a disposable copy of your database. Do not record fictional maintenance or receipts against real inventory. For the numeric examples, use a test part with stock 12, threshold 5, target 20, no active reorders or maintenance requests and no recent replacement on the selected machines.
 
-| Scenario | Steps | Expected result |
+## Lead reorder rule
+
+| Check | Steps | Expected |
 |---|---|---|
-| Request and approval | As Lead, request 10 units with a reason. As Administrator, approve with a comment. | Requested -> Approved. Requester identified correctly. Stock stays S. |
-| Self-review | Submit as Administrator, reopen it using that account. | Approve/reject buttons absent. Another Administrator must review. |
-| Record placed order | After approval, Mark ordered with PO-DEMO-1. | Ordered, PO reference displayed; stock still S. No supplier email/order is sent. |
-| First partial delivery | Receive 4 with reference SLIP-1-PART. | Stock S+4; received 4, remaining 6; Partially received; one delivery row. |
-| Duplicate delivery | Try another 1 using slip-1-part on the same order. | Error, stock still S+4; no extra receipt. |
-| Too many units | Try 7 using a new reference. | Error because only 6 remain; stock and delivery history unchanged. |
-| Finish delivery | Receive 6 with SLIP-2-PART. | Stock S+10; Received; remaining 0; two delivery rows. |
-| Closed order | View the completed order using All or Received filter. | Further receiving and cancellation unavailable. |
-| Cancel remainder | Create/approve/order a second 10-unit request; receive 3; cancel with a reason. | Cancelled, received 3 retained; cancelled remainder 7; stock keeps the 3 delivered. |
-| Rejection | Reject a new request with a comment. | Rejected; no ordering/receiving; stock unchanged. |
-| Validation | Submit blank reason, zero, negative or fractional quantity; omit a PO or delivery reference. | Submission blocked; no stock or order mutation from invalid input. |
-| Permissions | Sign in as Technician; as Lead inspect an Ordered request. | Technician has no Reorders access. Lead cannot approve, order or receive. |
-| Planning | For stock 12, target 20 and no active orders, request 5. Approve/order it, then receive 2. | Suggestion initially 8; pending request makes it 3; after receipt stock 14/outstanding 3 still suggests 3. |
-| Catalog snapshots | Request an order, then edit the part's supplier/cost in Inventory. | Order continues to show its original supplier/cost estimate; later requests use new details. |
-| Notifications | Submit as Lead; inspect Administrator notifications. Review/receive, then inspect Lead notifications. | Relevant purchasing notifications appear. No automated email is expected. |
-| Stale screen | Open the same Requested order in two Administrator sessions; review in one, then try in the other. | Second stale review rejected; first decision retained. Refresh shows current state. |
-| Concurrent final receipt | Two Administrator sessions try to receive the entire remaining balance with different references. | Only one commits; stock increases by the remaining balance once. |
-| Dialog lifecycle | Open Request reorder, edit, cancel and reopen; repeat Receive delivery cancellation. | No disposed-controller or _dependents assertion; fresh fields work. |
-| Persistence | Restart backend and Flutter after a partial receipt. | Accounts, previous inventory/history, order quantities and delivery rows remain. |
-| Regression | Verify equipment filters, replacement completion/history, account editing, line access and catalog editing. | Existing flows still work and scope restrictions remain enforced. |
+| Lead bypass | As Lead, request 10 units with a reason. | Approved immediately; bypass explanation shown. No review required and stock unchanged. |
+| Ordering | As Administrator, open that order and Mark ordered with a PO reference. | Ordered; physical stock unchanged. Lead cannot perform ordering/receiving. |
+| Partial delivery | Receive 4 with SLIP-A, then 6 with SLIP-B. | Partially received -> Received. Physical stock increases by exactly 10. |
+| Duplicate/over-receipt | Before the final receipt, try the same reference in lowercase; try more than the remaining amount. | Both fail without adding stock or delivery rows. |
+| Administrator request | Submit as Administrator. Try to review it using the same account, then another Administrator. | Own review blocked; another Administrator can approve/reject. |
+| Existing Lead request | On a disposable pre-update database, leave a Lead reorder Requested, then install/restart. | It becomes Approved once with upgrade explanation; other existing decisions and physical stock stay unchanged. |
 
-Run `flutter analyze` and `flutter test` as well. Keep the terminal output if any scenario fails, and report the action, role and exact error. Backend tests passed here; the Flutter scenarios require your local verification.
+## Stock reservations
+
+| Check | Steps | Expected |
+|---|---|---|
+| Reserve | Request normal maintenance for 7 units. | Physical 12, reserved 7, available 5; request Approved. Suggested reorder quantity 15 with no active reorders. |
+| Competing work | Another technician tries to request 6 units from the same SKU. | Insufficient available stock; no new reservation. |
+| Cancel | Cancel the 7-unit request. | Physical 12, reserved 0, available 12. |
+| Complete | Request 7 again and record physical completion. | Physical 5, reserved 0, available 5; one history record and deduction. Duplicate completion blocked. |
+| Pending early work | After a recent replacement, submit an early request with explanation. | Pending; no reservation. When approved by assigned Lead, quantity becomes reserved. |
+| Approval recheck | While early work waits, reserve the remaining stock on another eligible machine. Then approve the early request. | Approval fails; request stays Pending. Release reservations/receive stock, refresh and approve again. |
+| Stock adjustment | With 10 units reserved out of 12, try reducing physical stock by 3, then by 2. | -3 blocked; -2 allowed, leaving physical/reserved 10 and available 0. |
+| Receipt | With reservations in place, receive new stock through a placed reorder. | Physical and available increase by delivered quantity; reservations unchanged. |
+| Concurrent approvals | Two Lead sessions approve different Pending requests that compete for the final available unit. | Only one succeeds. |
+| Completion/cancel race | Two sessions try completion and cancellation of the same approved request. | Exactly one transition succeeds; reservation released once; stock deducted only if completion wins. |
+| Failed completion | Create competing normal requests for the same machine/part; complete the first, then try the second. | Second is blocked by the new early interval; its reservation remains until cancellation. |
+
+## Persistent alerts
+
+| Check | Steps | Expected |
+|---|---|---|
+| Low available | Reserve enough stock to reach the threshold. Open Notifications. | One active Low stock episode for that SKU. |
+| Deduplication | Refresh several times. | Same alert ID/episode; no duplicate active alert. |
+| Acknowledge | Acknowledge as Technician, then inspect as Lead. | Technician sees Seen; condition still Active; Lead still has their own acknowledgement button. |
+| Resolve | Cancel work or receive enough stock to raise available above the threshold. | Alert moves to Resolved; visible in Resolved/All. |
+| Recurrence | Reserve/consume again until availability is low. | New active episode, unacknowledged even if the old one was seen. |
+| Overdue | Use a disposable test record whose last replacement is older than its configured interval; refresh. | One Overdue maintenance alert for that machine/part. Unknown dates never automatically count as overdue. |
+| Fix overdue | Record a new physical replacement. | Overdue alert resolves; maintenance history updates. |
+| Permission | Restrict a technician to one line; create overdue work on a different line. | Its machine alert is absent for that technician; direct acknowledgement is rejected. Shared low-stock alerts remain visible. |
+| Interval/retirement | Increase the interval beyond elapsed time, or retire an overdue machine. | Its overdue condition resolves. Reverting interval can create a new episode. |
+| Persistence | Acknowledge an alert, leave work approved, restart both services. | Reservations, acknowledgement and alert history remain. |
+| Idle timing | Leave the app idle as a due date passes, then refresh. | The condition is detected at refresh; no unattended email is expected. |
+| Legacy shortage | In a disposable older database with approved quantities greater than physical stock, upgrade. | Work retained, available zero, shortfall shown. Receive stock/cancel work to clear it. |
+
+Run `flutter analyze` and `flutter test`. Also recheck account edits, line permissions, catalog edits, equipment filters and dialog cancellation/reopening. Send the exact terminal error and action/role if any check fails.
