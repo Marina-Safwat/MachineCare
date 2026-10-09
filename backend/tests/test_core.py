@@ -245,19 +245,19 @@ class WorkflowTests(unittest.TestCase):
         r=self.request();self.act('tech','complete',request_id=r['id'])
         before=self.store.state(self.tokens['admin'])
         with self.store.tx() as db:
-            db.execute('DROP TABLE line_access');db.execute('ALTER TABLE parts DROP COLUMN revision');db.execute('ALTER TABLE types DROP COLUMN revision');db.execute('PRAGMA user_version=1')
+            db.execute('DROP TABLE reorder_deliveries');db.execute('DROP TABLE reorders');db.execute('DROP TABLE line_access');db.execute('ALTER TABLE parts DROP COLUMN revision');db.execute('ALTER TABLE types DROP COLUMN revision');db.execute('PRAGMA user_version=1')
         reopened=Store(self.store.path)
         after=reopened.state(self.tokens['admin'])
         self.assertEqual(after['history'],before['history'])
         self.assertEqual(after['parts'],before['parts'])
         self.assertEqual(after['users'],before['users'])
         self.assertEqual(len(reopened.state(self.tokens['tech'])['machines']),4)
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],3)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],4)
     def test_migration_rerun_keeps_line_grants_and_version(self):
         self.line_only()
         reopened=Store(self.store.path)
         self.assertEqual(reopened.state(self.tokens['tech'])['user']['line_ids'],[1])
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],3)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],4)
     def test_http_forbidden_line_request_is_rejected(self):
         self.line_only()
         server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -363,7 +363,7 @@ class WorkflowTests(unittest.TestCase):
         self.line_only()
         before=self.store.state(self.tokens['admin'])
         with self.store.tx() as db:
-            db.execute('ALTER TABLE parts DROP COLUMN revision');db.execute('ALTER TABLE types DROP COLUMN revision');db.execute('PRAGMA user_version=2')
+            db.execute('DROP TABLE reorder_deliveries');db.execute('DROP TABLE reorders');db.execute('ALTER TABLE parts DROP COLUMN revision');db.execute('ALTER TABLE types DROP COLUMN revision');db.execute('PRAGMA user_version=2')
         upgraded=Store(self.store.path)
         self.assertEqual(upgraded.state(self.tokens['admin']),before)
         self.assertEqual(upgraded.state(self.tokens['tech'])['user']['line_ids'],[1])
@@ -385,6 +385,157 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(caught.exception.code,403)
             update(self.tokens['admin'],data)
             self.assertEqual(next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==1)['name'],'HTTP updated part')
+        finally:server.shutdown();server.server_close();thread.join()
+
+    def reorder(self,user='lead',quantity=10,key='purchase-first',part_id=1,**extra):
+        return self.act(user,'reorder_request',part_id=part_id,quantity=quantity,reason='Replenish spare parts',operation_key=key,**extra)
+    def order_ready(self,quantity=10,key='purchase-first',part_id=1):
+        r=self.reorder(quantity=quantity,key=key,part_id=part_id)
+        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Approved replenishment')
+        self.act('admin','reorder_order',reorder_id=r['id'],revision=1,po_reference='PO-001')
+        return r['id']
+    def receive(self,rid,quantity=4,reference='SLIP-1',key='delivery-first',user='admin',**extra):
+        return self.act(user,'reorder_receive',reorder_id=rid,quantity=quantity,delivery_reference=reference,operation_key=key,notes='Inspected delivery',**extra)
+    def test_reorder_approval_and_ordering_do_not_change_stock(self):
+        before=self.store.state(self.tokens['admin'])['parts']
+        r=self.reorder()
+        self.assertEqual(self.store.state(self.tokens['admin'])['reorders'][0]['state'],'Requested')
+        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Yes')
+        self.act('admin','reorder_order',reorder_id=r['id'],revision=1,po_reference='PO-123')
+        after=self.store.state(self.tokens['admin'])['parts']
+        self.assertEqual([p['stock'] for p in after],[p['stock'] for p in before])
+        self.assertEqual(self.store.state(self.tokens['admin'])['history'],[])
+    def test_partial_and_final_deliveries_record_atomic_stock_and_identity(self):
+        rid=self.order_ready()
+        result=self.receive(rid,quantity=4,received_by=4)
+        self.assertEqual(result['state'],'Partially received');self.assertEqual(result['remaining_quantity'],6)
+        result=self.receive(rid,quantity=6,reference='SLIP-2',key='delivery-second')
+        self.assertEqual(result['state'],'Received')
+        state=self.store.state(self.tokens['admin']);part=next(p for p in state['parts'] if p['id']==1)
+        self.assertEqual(part['stock'],22);self.assertEqual(len(state['deliveries']),2)
+        self.assertTrue(all(d['received_by']==1 for d in state['deliveries']))
+        with self.store.tx() as db:self.assertEqual(db.execute("SELECT SUM(delta) FROM ledger WHERE operation_key LIKE 'reorder-receipt:%'").fetchone()[0],10)
+        self.assertEqual(state['history'],[])
+    def test_duplicate_reorder_and_receipt_keys_and_references(self):
+        rid=self.order_ready()
+        with self.assertRaises(Error):self.reorder()
+        self.receive(rid)
+        with self.assertRaises(Error):self.receive(rid,reference='SLIP-NEW')
+        with self.assertRaises(Error):self.receive(rid,reference='slip-1',key='delivery-new')
+        state=self.store.state(self.tokens['admin'])
+        self.assertEqual(next(p for p in state['parts'] if p['id']==1)['stock'],16)
+        self.assertEqual(len(state['deliveries']),1)
+    def test_over_receiving_and_concurrent_final_deliveries(self):
+        rid=self.order_ready(quantity=5)
+        with self.assertRaises(Error):self.receive(rid,quantity=6)
+        self.assertEqual(self.store.state(self.tokens['admin'])['deliveries'],[])
+        def receiving(n):
+            try:self.receive(rid,quantity=5,reference=f'SLIP-{n}',key=f'CONCURRENT-{n}');return True
+            except Error:return False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(receiving,[1,2]))
+        self.assertEqual(sum(results),1)
+        state=self.store.state(self.tokens['admin'])
+        self.assertEqual(next(p for p in state['parts'] if p['id']==1)['stock'],17)
+        self.assertEqual(state['reorders'][0]['received_quantity'],5)
+        self.assertEqual(len(state['deliveries']),1)
+    def test_purchasing_roles_and_self_approval(self):
+        with self.assertRaises(Error):self.reorder(user='tech')
+        r=self.reorder(user='admin')
+        with self.assertRaises(Error):self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Self')
+        with self.assertRaises(Error):self.act('lead','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Lead')
+        rid=self.order_ready(key='lead-order')
+        for user in ['lead','tech']:
+            with self.assertRaises(Error):self.receive(rid,user=user,key='not-admin-'+user)
+        self.assertEqual(self.store.state(self.tokens['tech'])['reorders'],[])
+        self.assertEqual(self.store.state(self.tokens['tech'])['deliveries'],[])
+    def test_rejected_and_unordered_reorders_cannot_receive(self):
+        r=self.reorder()
+        with self.assertRaises(Error):self.receive(r['id'])
+        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Rejected',comment='Not needed')
+        with self.assertRaises(Error):self.receive(r['id'])
+        with self.assertRaises(Error):self.act('admin','reorder_order',reorder_id=r['id'],revision=1,po_reference='PO')
+        approved=self.reorder(key='approved')
+        self.act('admin','reorder_review',reorder_id=approved['id'],revision=0,decision='Approved',comment='Yes')
+        with self.assertRaises(Error):self.receive(approved['id'],key='approved-delivery')
+    def test_cancel_partial_order_keeps_received_stock_and_history(self):
+        rid=self.order_ready()
+        self.receive(rid,quantity=3)
+        self.act('admin','reorder_cancel',reorder_id=rid,revision=3,reason='Supplier cannot deliver remainder')
+        state=self.store.state(self.tokens['admin'])
+        self.assertEqual(state['reorders'][0]['state'],'Cancelled');self.assertEqual(state['reorders'][0]['received_quantity'],3)
+        part=next(p for p in state['parts'] if p['id']==1)
+        self.assertEqual(part['stock'],15);self.assertEqual(part['outstanding_order_quantity'],0);self.assertEqual(part['suggested_order_quantity'],5)
+        self.assertEqual(len(state['deliveries']),1)
+        with self.assertRaises(Error):self.receive(rid,quantity=7,reference='SLIP-2',key='late')
+    def test_lead_cancellation_limited_to_own_preorder_requests(self):
+        r=self.reorder()
+        self.act('lead','reorder_cancel',reorder_id=r['id'],revision=0,reason='No longer needed')
+        r=self.reorder(user='admin',key='another-requester')
+        with self.assertRaises(Error):self.act('lead','reorder_cancel',reorder_id=r['id'],revision=0,reason='Not mine')
+        rid=self.order_ready(key='ordered-lead')
+        with self.assertRaises(Error):self.act('lead','reorder_cancel',reorder_id=rid,revision=2,reason='Already ordered')
+    def test_purchase_revision_blocks_stale_approval_and_ordering(self):
+        r=self.reorder()
+        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='First')
+        with self.assertRaises(Error) as caught:self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Rejected',comment='Stale')
+        self.assertEqual(caught.exception.status,409)
+        with self.assertRaises(Error):self.act('admin','reorder_order',reorder_id=r['id'],revision=0,po_reference='PO-stale')
+    def test_reorder_suggestion_accounts_for_pending_and_outstanding(self):
+        def part():return next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==1)
+        self.assertEqual(part()['suggested_order_quantity'],8)
+        r=self.reorder(quantity=5)
+        self.assertEqual(part()['pending_reorder_quantity'],5);self.assertEqual(part()['suggested_order_quantity'],3)
+        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Yes')
+        self.assertEqual(part()['pending_reorder_quantity'],0);self.assertEqual(part()['outstanding_order_quantity'],5)
+        self.act('admin','reorder_order',reorder_id=r['id'],revision=1,po_reference='PO')
+        self.receive(r['id'],quantity=2)
+        self.assertEqual(part()['outstanding_order_quantity'],3);self.assertEqual(part()['stock'],14);self.assertEqual(part()['suggested_order_quantity'],3)
+    def test_purchase_snapshots_survive_part_edits_and_ignore_spoofed_identity(self):
+        r=self.reorder(requested_by=4,unit_cost_snapshot=0,supplier_snapshot='Spoof')
+        self.act('admin','edit_part',**self.edit_part_data(supplier='New supplier',cost=99))
+        saved=self.store.state(self.tokens['admin'])['reorders'][0]
+        self.assertEqual(saved['requested_by'],2);self.assertEqual(saved['unit_cost_snapshot'],24.5);self.assertEqual(saved['supplier_snapshot'],'')
+    def test_invalid_purchase_inputs_and_cancel_reasons(self):
+        for quantity in [0,-1,True,'2']:
+            with self.assertRaises(Error):self.reorder(quantity=quantity)
+        r=self.reorder()
+        with self.assertRaises(Error):self.act('lead','reorder_cancel',reorder_id=r['id'],revision=0,reason='')
+        rid=self.order_ready(key='valid')
+        for q in [0,-1,True,'2']:
+            with self.assertRaises(Error):self.receive(rid,quantity=q)
+        self.assertEqual(self.store.state(self.tokens['admin'])['deliveries'],[])
+    def test_v3_migration_and_v4_restarts_preserve_orders(self):
+        before=self.store.state(self.tokens['admin'])
+        with self.store.tx() as db:
+            db.execute('DROP TABLE reorder_deliveries');db.execute('DROP TABLE reorders');db.execute('PRAGMA user_version=3')
+        self.store=Store(self.store.path)
+        self.assertEqual(self.store.state(self.tokens['admin']),before)
+        rid=self.order_ready();self.receive(rid)
+        before=self.store.state(self.tokens['admin'])
+        reopened=Store(self.store.path)
+        self.assertEqual(reopened.state(self.tokens['admin']),before)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],4)
+    def test_purchase_notifications_and_audit_not_duplicated_by_retry(self):
+        r=self.reorder()
+        admins=self.store.state(self.tokens['admin'])['notifications']
+        with self.assertRaises(Error):self.reorder()
+        self.assertEqual(self.store.state(self.tokens['admin'])['notifications'],admins)
+        self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Yes')
+        self.assertTrue(any('Approved' in n['message'] for n in self.store.state(self.tokens['lead'])['notifications']))
+        with self.store.tx() as db:self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='reorder_request'").fetchone()[0],1)
+    def test_http_purchase_flow_through_partial_and_complete_receiving(self):
+        server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        def api(action,data,user):
+            req=Request(f'http://127.0.0.1:{server.server_port}/actions/{action}',data=json.dumps(data).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+self.tokens[user]})
+            with urlopen(req) as response:return json.load(response)
+        try:
+            r=api('reorder_request',{'part_id':1,'quantity':5,'reason':'HTTP replenish','operation_key':'http-order'},'lead')
+            api('reorder_review',{'reorder_id':r['id'],'revision':0,'decision':'Approved','comment':'Approved'},'admin')
+            api('reorder_order',{'reorder_id':r['id'],'revision':1,'po_reference':'HTTP-PO'},'admin')
+            result=api('reorder_receive',{'reorder_id':r['id'],'quantity':2,'delivery_reference':'HTTP-SLIP1','operation_key':'http-delivery1'},'admin')
+            self.assertEqual(result['state'],'Partially received')
+            result=api('reorder_receive',{'reorder_id':r['id'],'quantity':3,'delivery_reference':'HTTP-SLIP2','operation_key':'http-delivery2'},'admin')
+            self.assertEqual(result['state'],'Received')
         finally:server.shutdown();server.server_close();thread.join()
 
 if __name__=='__main__': unittest.main()

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import access_policy as scopes
 import catalog
+import purchasing
 
 class Error(Exception):
     def __init__(self, message, status=400):
@@ -37,13 +38,15 @@ class Store:
         try:
             db.execute('PRAGMA foreign_keys=ON')
             version=db.execute('PRAGMA user_version').fetchone()[0]
-            if version>3: raise Error('Database is newer than this application. Upgrade the app; do not downgrade.')
+            if version>4: raise Error('Database is newer than this application. Upgrade the app; do not downgrade.')
             db.executescript(Path(__file__).with_name('schema.sql').read_text())
             if version<1: db.execute('PRAGMA user_version=1')
             if version<2:
                 db.executescript((Path(__file__).parent/'migrations'/'002_line_access.sql').read_text())
             if version<3:
                 db.executescript((Path(__file__).parent/'migrations'/'003_catalog_revision.sql').read_text())
+            if version<4:
+                db.executescript((Path(__file__).parent/'migrations'/'004_purchasing.sql').read_text())
         except Exception:
             if db.in_transaction: db.rollback()
             raise
@@ -104,7 +107,7 @@ class Store:
             if not scopes.covers(db,scopes.grants(db,tech['lead_id']),scopes.grants(db,tech['id'])):
                 raise Error('Moving this line would leave a lead without access to assigned technician lines. Update assignments first.')
     def public_part(self,db,p):
-        return {**dict(p),'type_ids':[r[0] for r in db.execute('SELECT type_id FROM compatibility WHERE part_id=? ORDER BY type_id',(p['id'],))]}
+        return {**dict(p),**purchasing.planning(db,p),'type_ids':[r[0] for r in db.execute('SELECT type_id FROM compatibility WHERE part_id=? ORDER BY type_id',(p['id'],))]}
     def catalog_validation(self,fn,*args):
         try: return fn(*args)
         except catalog.CatalogError as e: raise Error(str(e)) from e
@@ -128,11 +131,14 @@ class Store:
             scope=scopes.grants(db,u['id'])
             accessible_lines=[dict(l) for l in db.execute('SELECT * FROM lines') if u['role']=='Administrator' or scopes.allows(scope,l['building_id'],l['id'])]
             building_ids=scope[0]|{l['building_id'] for l in accessible_lines}
-            return {'user':self.public_scope(db,u),'machines':machines,'parts':[self.public_part(db,r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':accessible_lines, 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[self.public_scope(db,r) for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
+            return {**purchasing.snapshot(db,u),'user':self.public_scope(db,u),'machines':machines,'parts':[self.public_part(db,r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':accessible_lines, 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[self.public_scope(db,r) for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
     def execute(self,raw,action,d):
         with self.tx() as db:
             u=self.user(db,raw,action in ('password','logout'))
             uid=u['id']
+            if action.startswith('reorder_'):
+                try: return purchasing.handle(db,u,action,d)
+                except purchasing.PurchaseError as e: raise Error(e.message,e.status) from e
             if action=='logout':
                 db.execute('DELETE FROM sessions WHERE token=?',(hashlib.sha256(raw.encode()).hexdigest(),)); return {}
             if action=='password':

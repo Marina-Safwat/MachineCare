@@ -1,35 +1,12 @@
-# Update 3: Machine-type and part-detail editing
+# Update 4: Reorder approvals and partial deliveries
 
-This is a cumulative update: it includes account editing, building/line access, equipment filters and the dialog controller fix.
+This cumulative update includes account editing, line access, catalog editing, equipment filters and the dialog fix. Install over your existing MachineCare pilot; this ZIP is an update, not a standalone project.
 
-## New actions
+## Install step by step
 
-- Administrator -> Administration -> Machine types -> pencil: rename a type.
-- Administrator -> Inventory -> Edit details: change a part's name, SKU, supplier, supplier part number, bin, cost, expected replacement interval, reorder threshold/target, supplier lead time and compatible machine types.
-- Inventory -> Add part now uses labeled fields and compatibility checkboxes instead of typing type IDs.
-
-Part edits require a reason and are recorded with before/after details in the audit database. This update does not add an audit-log viewer.
-
-## Install
-
-1. Stop Flutter with `q`; stop the backend with Ctrl+C.
-2. Back up your code and backend/machinecare.db while the backend is stopped. Keep backups outside app/lib.
-3. Copy this package's files to the matching folders under F:\work\machinecare_flutter:
-
-| File | Purpose |
-|---|---|
-| backend/core.py | Updated domain actions and migration runner |
-| backend/access_policy.py | Building/line permission rules |
-| backend/catalog.py | New catalog validation module |
-| backend/schema.sql | Baseline schema |
-| backend/migrations/002_line_access.sql | Earlier additive line-access upgrade |
-| backend/migrations/003_catalog_revision.sql | New catalog-version upgrade |
-| backend/tests/test_core.py | Updated full backend suite |
-| app/lib/workspace.dart | Both editors plus previous frontend updates |
-| app/test/*.dart | Updated/new widget tests; keep your existing login test |
-
-Copy every required backend file, including the migrations folder. Do not delete the database, reinitialize the administrator or reseed.
-
+1. Stop Flutter with `q` and the backend with Ctrl+C.
+2. Back up your project and `backend/machinecare.db` while both are stopped. Keep backup Dart files outside `app/lib`.
+3. Extract the ZIP. Copy the contents of its `backend` and `app` folders into the matching folders in `F:\work\machinecare_flutter`, replacing matching files. Copy ALL included files, particularly the new `backend/purchasing.py` and `backend/migrations/004_purchasing.sql`. Keep your existing `server.py`, `main.dart`, `api.dart`, `pubspec.yaml`, login test and database.
 4. Run checks:
 
 ```powershell
@@ -40,7 +17,7 @@ flutter analyze
 flutter test
 ```
 
-If the C: drive is still short of space, set these in the Flutter terminal before testing/running:
+If C: is still short of temporary space, set these in the Flutter terminal before testing:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path F:\FlutterTemp
@@ -48,7 +25,7 @@ $env:TEMP = 'F:\FlutterTemp'
 $env:TMP = 'F:\FlutterTemp'
 ```
 
-5. Restart the backend:
+5. Start the backend:
 
 ```powershell
 cd F:\work\machinecare_flutter\backend
@@ -56,42 +33,45 @@ $env:MACHINECARE_ORIGIN = 'http://localhost:18080'
 python server.py run
 ```
 
-The backend upgrades schema version 1 or 2 to version 3 automatically, preserving existing accounts, line grants, equipment, stock and maintenance. Version 3 adds revision counters for machine types and parts; no inventory balances are modified.
+Startup automatically adds purchasing tables and upgrades existing schemas to version 4. Existing accounts, stock, equipment and history are retained. Do not run `init` or `seed` and do not delete the database.
 
-6. Restart Flutter in another terminal:
+6. Start Flutter in a separate terminal:
 
 ```powershell
 cd F:\work\machinecare_flutter\app
 flutter run -d chrome --web-hostname localhost --web-port 18080 --dart-define=API_URL=http://127.0.0.1:8000
 ```
 
-## Important rules
+## Use the new features
 
-- Editing part metadata cannot set stock. Use Receive or Adjust for inventory quantities.
-- SKU edits keep the same part ID, compatibility links, inventory and maintenance references. New/edit SKUs are trimmed and stored uppercase; duplicates are checked without case sensitivity.
-- Machine-type names are unique without case sensitivity. Renaming preserves IDs and machine/part relationships.
-- Unit cost is nonnegative and supports at most two decimal places. Target stock must be at least the reorder threshold. Expected interval must be positive.
-- Every part must have at least one compatible machine type.
-- Compatibility required by Pending or Approved requests cannot be removed. Finish or cancel those requests first. Completed history never blocks a compatibility update and is never deleted.
-- Historical maintenance stores quantity, unit cost, replacement time, technician and location. Metadata edits do not rewrite these records. Part names shown beside old history are the current catalog names; historical machine-location labels remain the captured labels.
-- Future completed work captures the price configured at completion, not necessarily at request submission. Existing completed costs do not change.
-- Increasing expected life can make already-approved normal work early. The backend checks again at completion and may require cancellation/resubmission for lead approval. Reducing expected life does not auto-approve existing pending requests. Overdue metrics use the currently configured interval.
-- One shared balance/bin per SKU remains the pilot inventory model. Changing the bin changes the catalog location label; no stock movement, receipt or physical relocation is automatically performed.
-- Catalog edits include a revision number. If another admin saves first, stale saves are blocked instead of overwriting their changes. Close/reopen the editor to reload; note your intended changes before doing so.
-- Permission checks remain server-side. Leads and technicians cannot edit catalog details even by calling the API directly.
+Lead or Administrator: Inventory -> Request reorder, or Reorders -> Request reorder. Enter quantity and reason. A different Administrator approves or rejects it with a comment. For a simple demo, submit as a Lead, then approve as your Administrator.
 
-## Actual verification
+Administrator: place the actual supplier order using your purchasing process, then click Mark ordered and enter its PO/reference. Click Receive delivery for each physical arrival. Enter the arrived quantity and a unique delivery reference, for example `SLIP-100-SEAL-1`. The order moves to Partially received, then Received when its full quantity arrives. Expand Delivery history to see each receipt.
 
-51 backend tests passed in 34.004 seconds on Python 3.12.14. This includes 37 existing tests and 14 new catalog tests. Python syntax compilation passed. Raw final output is TEST_RESULTS.txt.
+| Action | Allowed role | Stock effect |
+|---|---|---|
+| Request | Lead or Administrator | None |
+| Approve/reject | Another Administrator | None |
+| Mark ordered | Administrator | None |
+| Receive delivery | Administrator | Adds only received quantity |
+| Cancel remaining | Administrator; Lead can cancel their own Requested/Approved request | Received stock retained |
 
-New tests cover renamed type relationships/history, permission checks, duplicates, stale/conflicting metadata updates, stock/ledger/history preservation, future versus historical costs, active compatibility safeguards, shared stock after new compatibility, receipts during metadata edits, changed expected intervals, v2->v3 migration and repeated starts.
+Purchasing and inventory are facility-wide in this pilot. Machine building/line access still governs maintenance work; it does not restrict purchasing by building. Technicians cannot access purchasing actions or records.
 
-Flutter is not installed in the delivery environment. Supplied widget tests are NOT executed here. Run flutter analyze/flutter test and VERIFY_SCENARIOS.md locally. Backend coverage does not substitute for frontend verification or production security review.
+## Rules and current limits
 
-## Rollback
+- Approval cannot be performed by the requester. If an Administrator submits a request, another Administrator must review it.
+- Supplier, supplier part number and unit cost are captured at request time. Estimated value excludes freight/tax; it is not an invoice or paid amount.
+- Stock, delivery, inventory ledger, order status, notification and audit changes commit together. Failed or duplicate receipts do not add stock.
+- Each order/reference pair is unique without case sensitivity. Repeated operation keys are also blocked. Refresh after an uncertain network response to see whether it committed before resubmitting.
+- Use Reorders -> Receive delivery for purchased orders. The existing Inventory -> Receive action is for unlinked receipts and does not update an order. Recording the same physical delivery through both paths can double-count stock; cross-path physical receipt matching is not implemented.
+- Requested quantities count as pending planning. Approved/Ordered/Partially received balances count as outstanding. Suggested quantity is max(0, target - stock - outstanding - pending). These quantities do not reserve inventory or guarantee delivery.
+- Approval, ordering and cancellation check record revisions to block stale edits. Refresh before retrying conflicts. Concurrent deliveries check the current remaining balance inside the transaction.
+- Cancelling a partial order cancels only its remaining quantity; prior deliveries and stock remain. Arrange supplier cancellation separately for placed orders.
+- Supplier ordering and email are manual. In-app purchasing notifications are provided; automatic email, supplier integration, reservations and scheduled alerts remain future work.
 
-Stop both services and restore the complete pre-update code and matching stopped-database backup together. Restoring only old code can remove line permission enforcement. Restoring a backup reverts changes recorded since the backup. Never overwrite a live database.
+## Verification and rollback
 
-## Next pair
+66 backend tests passed in 45.070 seconds, including 15 new purchasing tests and a real HTTP end-to-end purchasing flow. See TEST_RESULTS.txt. Flutter is unavailable in the build environment, so supplied widget tests and Flutter analysis have NOT run here. Run the local checks and VERIFY_SCENARIOS.md before relying on the update.
 
-Reorder requests/approvals and partial deliveries, with atomic receiving and duplicate prevention.
+To roll back, stop both services and restore the entire previous code plus its matching stopped-database backup together. A restored backup loses changes since the backup. Do not overwrite a live database or downgrade only the code.

@@ -60,8 +60,10 @@ class _WorkspaceState extends State<Workspace> {
   String? filterStation, filterStatus;
   final equipmentSearch = TextEditingController();
   @override void dispose() { equipmentSearch.dispose(); super.dispose(); }
-  static const pages = ['Overview', 'Equipment', 'Inventory', 'Approvals', 'History', 'Administration', 'Notifications'];
-  static const icons = [Icons.dashboard_outlined, Icons.precision_manufacturing_outlined, Icons.inventory_2_outlined, Icons.fact_check_outlined, Icons.history, Icons.settings_outlined, Icons.notifications_outlined];
+  static const pages = ['Overview', 'Equipment', 'Inventory', 'Approvals', 'History', 'Administration', 'Notifications', 'Reorders'];
+  static const icons = [Icons.dashboard_outlined, Icons.precision_manufacturing_outlined, Icons.inventory_2_outlined, Icons.fact_check_outlined, Icons.history, Icons.settings_outlined, Icons.notifications_outlined, Icons.shopping_cart_outlined];
+  String reorderFilter = 'Active';
+  bool get purchasingAllowed => ['Administrator', 'Lead'].contains(state['user']?['role']);
   bool get admin => state['user']?['role'] == 'Administrator';
   @override void initState() { super.initState(); refresh(); }
   Future<void> refresh() async {
@@ -91,11 +93,11 @@ class _WorkspaceState extends State<Workspace> {
     for (final m in machines) { for (final p in (m['parts'] as List)) { if (p['last_replacement'] != null && DateTime.now().difference(DateTime.parse(p['last_replacement'] as String)).inDays >= (p['interval_days'] as int)) overdue++; } }
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Text('Keep production moving.', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700)), const SizedBox(height: 8), const Text('One place for equipment, replacement decisions, and shared spare parts.'), const SizedBox(height: 22),
-      Wrap(spacing: 12, runSpacing: 12, children: [metric('Machines', '${machines.length}', Icons.precision_manufacturing), metric('Low-stock SKUs', '${low.length}', Icons.inventory), metric('Pending approvals', '$pending', Icons.approval), metric('Recorded spending', '\$${spend.toStringAsFixed(2)}', Icons.payments)]),
+      Wrap(spacing: 12, runSpacing: 12, children: [metric('Machines', '${machines.length}', Icons.precision_manufacturing), metric('Low-stock SKUs', '${low.length}', Icons.inventory), metric('Pending approvals', '$pending', Icons.approval), metric('Recorded spending', '\$${spend.toStringAsFixed(2)}', Icons.payments), if (purchasingAllowed) metric('Outstanding reorders', '${rows(state, 'reorders').where((r) => ['Approved', 'Ordered', 'Partially received'].contains(r['state'])).length}', Icons.shopping_cart_outlined)]),
       const SizedBox(height: 18), panel('Production status', [Wrap(spacing: 12, children: ['Operating', 'Maintenance', 'Stopped', 'Retired'].map((s) => pill('$s: ${machines.where((m) => m['status'] == s).length}')).toList()), Text('$overdue machine/part intervals overdue. No history means due date unknown.')]),
       panel('Stock needs attention', low.isEmpty ? [const Text('No low-stock parts.')] : low.map((p) => ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.warning_amber, color: Colors.orange), title: Text(p['name'] as String), subtitle: Text('${p['sku']} • ${p['bin']}'), trailing: Text('${p['stock']} available / ${p['threshold']} threshold'))).toList()),
       panel('Recent replacements', history.take(5).map((h) => ListTile(contentPadding: EdgeInsets.zero, title: Text('${h['part']} • ${h['location_snapshot']}'), subtitle: Text('${date(h['replaced'])} • ${h['technician']} • Qty ${h['quantity']}'))).toList().isEmpty ? [const Text('No completed replacements yet.')] : history.take(5).map((h) => ListTile(contentPadding: EdgeInsets.zero, title: Text('${h['part']} • ${h['location_snapshot']}'), subtitle: Text('${date(h['replaced'])} • ${h['technician']} • Qty ${h['quantity']}'))).toList()),
-      const Padding(padding: EdgeInsets.all(12), child: Text('Pilot: in-app notifications available. Automatic email and purchasing are not connected.')),
+      const Padding(padding: EdgeInsets.all(12), child: Text('Pilot: in-app notifications available. Automatic email is not configured. Ordering remains a manual purchasing step.')),
     ]);
   }
   Widget metric(String label, String value, IconData icon) => SizedBox(width: 230, child: Card(child: Padding(padding: const EdgeInsets.all(22), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Icon(icon, color: const Color(0xff0c756c)), const SizedBox(height: 18), Text(value, style: const TextStyle(fontSize: 30, fontWeight: FontWeight.bold)), Text(label)]))));
@@ -175,7 +177,7 @@ class _WorkspaceState extends State<Workspace> {
   }
   Widget inventory() => Column(children: [
     if (admin) Align(alignment: Alignment.centerRight, child: FilledButton.icon(onPressed: addPart, icon: const Icon(Icons.add), label: const Text('Add part'))),
-    for (final p in rows(state, 'parts')) panel('${p['name']} · ${p['sku']}', [Text('Shared stock: ${p['stock']} • Bin: ${p['bin']}'), Text('Threshold ${p['threshold']} • Target ${p['target']} • Expected life ${p['interval_days']} days'), Text('Unit cost \$${(p['cost'] as num).toStringAsFixed(2)} • Supplier: ${p['supplier']}'), if (p['stock'] <= p['threshold']) const Text('LOW STOCK • reorder planning required', style: TextStyle(color: Colors.deepOrange)), if (admin) Wrap(spacing: 10, children: [TextButton.icon(onPressed: () => editPart(p), icon: const Icon(Icons.edit_outlined), label: const Text('Edit details')), TextButton(onPressed: () => form('Receive stock', 'receipt', [['quantity', 'Received quantity', 'int'], ['reason', 'Receipt reference / reason']], extra: {'part_id': p['id'], 'operation_key': 'receipt:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Receive')), TextButton(onPressed: () => form('Adjust inventory', 'adjust', [['delta', 'Signed adjustment (+ / −)', 'int'], ['reason', 'Required adjustment reason']], extra: {'part_id': p['id'], 'operation_key': 'adjust:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Adjust'))])]),
+    for (final p in rows(state, 'parts')) panel('${p['name']} · ${p['sku']}', [Text('Shared stock: ${p['stock']} • Bin: ${p['bin']}'), Text('Threshold ${p['threshold']} • Target ${p['target']} • Expected life ${p['interval_days']} days'), Text('Unit cost \$${(p['cost'] as num).toStringAsFixed(2)} • Supplier: ${p['supplier']}'), Text('Suggested order: ${p['suggested_order_quantity'] ?? 0} • Approved/ordered outstanding: ${p['outstanding_order_quantity'] ?? 0} • Pending requests: ${p['pending_reorder_quantity'] ?? 0}'), if (purchasingAllowed) TextButton.icon(onPressed: () => requestReorder(p), icon: const Icon(Icons.add_shopping_cart), label: const Text('Request reorder')), if (p['stock'] <= p['threshold']) const Text('LOW STOCK • reorder planning required', style: TextStyle(color: Colors.deepOrange)), if (admin) Wrap(spacing: 10, children: [TextButton.icon(onPressed: () => editPart(p), icon: const Icon(Icons.edit_outlined), label: const Text('Edit details')), TextButton(onPressed: () => form('Receive stock', 'receipt', [['quantity', 'Received quantity', 'int'], ['reason', 'Receipt reference / reason']], extra: {'part_id': p['id'], 'operation_key': 'receipt:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Receive')), TextButton(onPressed: () => form('Adjust inventory', 'adjust', [['delta', 'Signed adjustment (+ / −)', 'int'], ['reason', 'Required adjustment reason']], extra: {'part_id': p['id'], 'operation_key': 'adjust:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Adjust'))])]),
   ]);
   Future<void> addPart() => editPart(null);
   Future<void> editPart(Map<String, dynamic>? part) async {
@@ -229,10 +231,65 @@ class _WorkspaceState extends State<Workspace> {
     if (!mounted) return;
     await refresh();
   }
+  Future<void> requestReorder([Map<String, dynamic>? part]) async {
+    final parts = rows(state, 'parts');
+    if (parts.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Add inventory parts before requesting an order.')));
+      return;
+    }
+    final key = 'reorder:${DateTime.now().microsecondsSinceEpoch}:${state['user']['id']}';
+    await showDialog<bool>(context: context, builder: (_) => ReorderRequestEditor(
+      parts: parts, initialPartId: part?['id'] as int?,
+      onSave: (data) async { await widget.api.action('reorder_request', {...data, 'operation_key': key}); },
+    ));
+    if (!mounted) return;
+    await refresh();
+  }
+  Widget reorders() {
+    if (!purchasingAllowed) return const Text('Purchasing requires Lead or Administrator access.');
+    final all = rows(state, 'reorders');
+    final visible = all.where((r) => reorderFilter == 'All' || (reorderFilter == 'Active' ? ['Requested', 'Approved', 'Ordered', 'Partially received'].contains(r['state']) : r['state'] == reorderFilter)).toList();
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      panel('Reorders & deliveries', [
+        const Text('Lead or Administrator requests → another Administrator approves → Administrator records ordering → Administrator receives deliveries.'),
+        const SizedBox(height: 14),
+        Wrap(spacing: 16, runSpacing: 12, children: [FilledButton.icon(onPressed: () => requestReorder(), icon: const Icon(Icons.add_shopping_cart), label: const Text('Request reorder')), SizedBox(width: 240, child: DropdownButtonFormField<String>(value: reorderFilter, decoration: const InputDecoration(labelText: 'Status'), items: ['Active', 'All', 'Requested', 'Approved', 'Ordered', 'Partially received', 'Received', 'Rejected', 'Cancelled'].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(), onChanged: (s) => setState(() => reorderFilter = s!)))]),
+      ]),
+      if (visible.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('No reorders match this status.')),
+      for (final r in visible) panel('Reorder #${r['id']} · ${r['part']}', [
+        Wrap(spacing: 8, children: [pill(r['state'] as String), pill(r['sku'] as String)]),
+        Text('Requested ${r['quantity']} • Received ${r['received_quantity']} • ${r['state'] == 'Cancelled' ? 'Cancelled remainder' : 'Remaining'} ${(r['quantity'] as int) - (r['received_quantity'] as int)}'),
+        Text('Requester: ${r['requester']} • ${date(r['created'])}'),
+        Text('Supplier at request: ${(r['supplier_snapshot'] as String).isEmpty ? 'Not provided' : r['supplier_snapshot']} • Supplier part: ${r['supplier_number_snapshot']}'),
+        Text('Estimated order value: \$${((r['quantity'] as num) * (r['unit_cost_snapshot'] as num)).toStringAsFixed(2)} (snapshot at request; excludes freight/tax)'),
+        Text('Reason: ${r['reason']}'),
+        if (r['review_comment'] != null) Text('Review: ${r['review_comment']}'),
+        if (r['po_reference'] != null) Text('Order / PO reference: ${r['po_reference']}'),
+        if (r['cancellation_reason'] != null) Text('Cancellation: ${r['cancellation_reason']}'),
+        if (r['state'] == 'Requested' && r['requested_by'] == state['user']['id']) const Text('Another administrator must review your request.'),
+        const SizedBox(height: 12),
+        Wrap(spacing: 10, runSpacing: 8, children: [
+          if (admin && r['state'] == 'Requested' && r['requested_by'] != state['user']['id']) ...[
+            FilledButton(onPressed: () => reviewReorder(r, 'Approved'), child: const Text('Approve order')),
+            OutlinedButton(onPressed: () => reviewReorder(r, 'Rejected'), child: const Text('Reject order')),
+          ],
+          if (admin && r['state'] == 'Approved') FilledButton.tonal(onPressed: () => form('Record ordering · #${r['id']}', 'reorder_order', [['po_reference', 'Order / PO reference']], extra: {'reorder_id': r['id'], 'revision': r['revision']}, intro: 'Record this only after the order has been placed through your purchasing process. This app does not send an order to the supplier.'), child: const Text('Mark ordered')),
+          if (admin && ['Ordered', 'Partially received'].contains(r['state'])) FilledButton(onPressed: () => receiveReorder(r), child: const Text('Receive delivery')),
+          if (['Requested', 'Approved', 'Ordered', 'Partially received'].contains(r['state']) && (admin || (r['requested_by'] == state['user']['id'] && ['Requested', 'Approved'].contains(r['state'])))) TextButton(onPressed: () => form('Cancel remaining order · #${r['id']}', 'reorder_cancel', [['reason', 'Required cancellation reason']], extra: {'reorder_id': r['id'], 'revision': r['revision']}, intro: 'Received stock is retained. The unreceived balance is cancelled. If already ordered, arrange cancellation with the supplier separately.'), child: const Text('Cancel remaining')),
+        ]),
+        ExpansionTile(title: const Text('Delivery history'), children: [
+          if (!rows(state, 'deliveries').any((d) => d['reorder_id'] == r['id'])) const ListTile(title: Text('No deliveries recorded.')),
+          for (final d in rows(state, 'deliveries').where((d) => d['reorder_id'] == r['id'])) ListTile(title: Text('${d['delivery_reference']} • Qty ${d['quantity']}'), subtitle: Text('${date(d['received'])} • ${d['receiver']} • ${d['notes']}')),
+        ]),
+      ]),
+    ]);
+  }
+  Future<void> reviewReorder(Map<String, dynamic> r, String decision) => form('$decision reorder #${r['id']}', 'reorder_review', [['comment', 'Review comment']], extra: {'reorder_id': r['id'], 'revision': r['revision'], 'decision': decision});
+  Future<void> receiveReorder(Map<String, dynamic> r) => form('Receive delivery · #${r['id']}', 'reorder_receive', [['quantity', 'Quantity physically received', 'int'], ['delivery_reference', 'Unique delivery reference for this order'], ['notes', 'Delivery notes', 'optional']], extra: {'reorder_id': r['id'], 'operation_key': 'delivery:${DateTime.now().microsecondsSinceEpoch}:${state['user']['id']}'}, intro: '${r['part']} • ${(r['quantity'] as int) - (r['received_quantity'] as int)} units remaining. Use a distinct packing-slip/item reference for each delivery. Only record stock that physically arrived.');
   Widget notifications() => Column(children: [const Text('Automatic email unavailable in this pilot.'), if (rows(state, 'notifications').isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('No notifications.')), for (final n in rows(state, 'notifications')) Card(child: ListTile(leading: const Icon(Icons.notifications_outlined), title: Text(n['message'] as String), subtitle: Text(date(n['created']))))]);
   @override Widget build(BuildContext context) {
-    final content = loading && state.isEmpty ? const Center(child: CircularProgressIndicator()) : error != null ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(error!), TextButton(onPressed: refresh, child: const Text('Retry'))])) : SingleChildScrollView(padding: const EdgeInsets.all(28), child: [overview, equipment, inventory, approvals, history, administration, notifications][page]());
-    final nav = ListView(children: [const Padding(padding: EdgeInsets.all(24), child: Text('MachineCare', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800))), for (var i = 0; i < pages.length; i++) if (i != 5 || admin) ListTile(selected: page == i, leading: Icon(icons[i]), title: Text(pages[i]), onTap: () { setState(() => page = i); if (MediaQuery.sizeOf(context).width < 900) Navigator.pop(context); }), const Divider(), const Padding(padding: EdgeInsets.all(20), child: Text('LOCAL PILOT\nSample equipment\nEmail not configured', style: TextStyle(fontSize: 12)))]);
+    final content = loading && state.isEmpty ? const Center(child: CircularProgressIndicator()) : error != null ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(error!), TextButton(onPressed: refresh, child: const Text('Retry'))])) : SingleChildScrollView(padding: const EdgeInsets.all(28), child: [overview, equipment, inventory, approvals, history, administration, notifications, reorders][page]());
+    final nav = ListView(children: [const Padding(padding: EdgeInsets.all(24), child: Text('MachineCare', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800))), for (var i = 0; i < pages.length; i++) if ((i != 5 || admin) && (i != 7 || purchasingAllowed)) ListTile(selected: page == i, leading: Icon(icons[i]), title: Text(pages[i]), onTap: () { setState(() => page = i); if (MediaQuery.sizeOf(context).width < 900) Navigator.pop(context); }), const Divider(), const Padding(padding: EdgeInsets.all(20), child: Text('LOCAL PILOT\nSample equipment\nEmail not configured', style: TextStyle(fontSize: 12)))]);
     return LayoutBuilder(builder: (ctx, size) => Scaffold(appBar: AppBar(title: Text(pages[page]), actions: [Center(child: Text('${state['user']?['username'] ?? ''} • ${state['user']?['role'] ?? ''}')), IconButton(tooltip: 'Refresh', onPressed: loading ? null : refresh, icon: const Icon(Icons.refresh)), IconButton(tooltip: 'Change password', onPressed: () async { if (await changePassword(context, widget.api) && context.mounted) Navigator.pop(context); }, icon: const Icon(Icons.password)), IconButton(tooltip: 'Sign out', onPressed: () async { try { await widget.api.action('logout', {}); } finally { widget.api.token = null; if (context.mounted) Navigator.pop(context); } }, icon: const Icon(Icons.logout))]), drawer: size.maxWidth < 900 ? Drawer(child: nav) : null, body: Column(children: [if (loading) const LinearProgressIndicator(), Expanded(child: Row(children: [if (size.maxWidth >= 900) SizedBox(width: 235, child: Material(color: Colors.white, child: nav)), Expanded(child: content)]))])));
   }
 }
@@ -386,4 +443,41 @@ class _PartEditorState extends State<PartEditor> {
     ]))),
     actions: [TextButton(onPressed: busy ? null : () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: busy ? null : save, child: Text(busy ? 'Saving…' : creating ? 'Add part' : 'Save details'))],
   );
+}
+
+class ReorderRequestEditor extends StatefulWidget {
+  final List<Map<String, dynamic>> parts;
+  final int? initialPartId;
+  final Future<void> Function(Map<String, dynamic>) onSave;
+  const ReorderRequestEditor({super.key, required this.parts, this.initialPartId, required this.onSave});
+  @override State<ReorderRequestEditor> createState() => _ReorderRequestEditorState();
+}
+class _ReorderRequestEditorState extends State<ReorderRequestEditor> {
+  late int partId;
+  final quantity = TextEditingController(), reason = TextEditingController();
+  bool busy = false; String? error;
+  Map<String, dynamic> get part => widget.parts.firstWhere((p) => p['id'] == partId);
+  @override void initState() { super.initState(); partId = widget.initialPartId ?? (widget.parts.first['id'] as int); resetSuggestion(); }
+  void resetSuggestion() { final suggested = part['suggested_order_quantity'] as int? ?? 0; quantity.text = suggested > 0 ? '$suggested' : '1'; }
+  @override void dispose() { quantity.dispose(); reason.dispose(); super.dispose(); }
+  Future<void> save() async {
+    setState(() { busy = true; error = null; });
+    try {
+      final amount = int.tryParse(quantity.text.trim());
+      if (amount == null || amount < 1) throw Exception('Quantity must be a positive whole number.');
+      if (reason.text.trim().isEmpty) throw Exception('A reorder reason is required.');
+      await widget.onSave({'part_id': partId, 'quantity': amount, 'reason': reason.text.trim()});
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) { if (mounted) setState(() => error = cleanError(e)); }
+    finally { if (mounted) setState(() => busy = false); }
+  }
+  @override Widget build(BuildContext context) => AlertDialog(title: const Text('Request reorder'), content: SizedBox(width: 520, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+    DropdownButtonFormField<int>(value: partId, isExpanded: true, decoration: const InputDecoration(labelText: 'Part'), items: widget.parts.map((p) => DropdownMenuItem<int>(value: p['id'] as int, child: Text('${p['name']} · ${p['sku']}', overflow: TextOverflow.ellipsis))).toList(), onChanged: busy ? null : (id) => setState(() { partId = id!; resetSuggestion(); })),
+    const SizedBox(height: 14), Text('Stock ${part['stock']} • Target ${part['target']} • Approved/ordered outstanding ${part['outstanding_order_quantity'] ?? 0} • Pending requests ${part['pending_reorder_quantity'] ?? 0}'),
+    Text('Suggested quantity: ${part['suggested_order_quantity'] ?? 0}. You can request a different quantity with a reason.'),
+    const SizedBox(height: 14), TextField(controller: quantity, enabled: !busy, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Requested quantity')),
+    const SizedBox(height: 14), TextField(controller: reason, enabled: !busy, decoration: const InputDecoration(labelText: 'Reorder reason')),
+    const SizedBox(height: 14), const Text('Submitting and approval do not add stock. An administrator records physical deliveries after the order is placed.'),
+    if (error != null) Padding(padding: const EdgeInsets.only(top: 14), child: Text(error!, style: const TextStyle(color: Colors.red))),
+  ]))), actions: [TextButton(onPressed: busy ? null : () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: busy ? null : save, child: Text(busy ? 'Submitting…' : 'Submit reorder'))]);
 }
