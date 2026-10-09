@@ -30,7 +30,7 @@ def snapshot(db,u):
             'deliveries':[dict(r) for r in db.execute('SELECT d.*,u.username receiver FROM reorder_deliveries d JOIN users u ON u.id=d.received_by ORDER BY d.id DESC')]}
 
 def admins(db,message,exclude=None):
-    for u in db.execute("SELECT id FROM users WHERE role='Administrator' AND active=1 AND id!=?",(exclude or -1,)).fetchall():
+    for u in db.execute("SELECT id FROM users WHERE role IN ('Lead','Administrator') AND active=1 AND id!=?",(exclude or -1,)).fetchall():
         db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(u['id'],message,now()))
 
 def notify(db,user_id,message):db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(user_id,message,now()))
@@ -49,12 +49,11 @@ def handle(db,u,action,d):
         if state=='Approved':
             db.execute("UPDATE reorders SET state='Approved',reviewed_by=?,reviewed=?,review_comment='Lead request: approval not required' WHERE id=?",(uid,now(),rid))
         admins(db,f'Reorder #{rid}: Lead request approved; ready for ordering.' if state=='Approved' else f'Reorder #{rid} requires approval.',uid)
-        audit(db,uid,action,{'reorder_id':rid,'part_id':pid,'quantity':quantity,'state':state,'approval_policy':'Lead bypass' if state=='Approved' else 'Separate administrator'})
+        audit(db,uid,action,{'reorder_id':rid,'part_id':pid,'quantity':quantity,'state':state,'approval_policy':'Lead bypass' if state=='Approved' else 'Separate Lead or Administrator'})
         return {'id':rid,'state':state}
     rid=integer(d,'reorder_id')
     r=db.execute('SELECT * FROM reorders WHERE id=?',(rid,)).fetchone()
     if not r:raise PurchaseError('Reorder not found.',404)
-    if action!='reorder_cancel' and u['role']!='Administrator':raise PurchaseError('Administrator permission required for approval, ordering and receiving.',403)
     if action=='reorder_receive':
         quantity=integer(d,'quantity');reference=text(d,'delivery_reference').upper();key=text(d,'operation_key');notes=text(d,'notes',True)
         if db.execute('SELECT 1 FROM reorder_deliveries WHERE operation_key=?',(key,)).fetchone() or db.execute('SELECT 1 FROM ledger WHERE operation_key=?',('reorder-receipt:'+key,)).fetchone():raise PurchaseError('This delivery operation was already recorded. Refresh to inspect its receipt.',409)
@@ -73,7 +72,7 @@ def handle(db,u,action,d):
     revision=integer(d,'revision',0)
     if revision!=r['revision']:raise PurchaseError('This reorder changed in another session. Refresh before acting.',409)
     if action=='reorder_review':
-        if uid==r['requested_by']:raise PurchaseError('You cannot approve or reject your own reorder. Use another administrator.',403)
+        if uid==r['requested_by']:raise PurchaseError('You cannot approve or reject your own reorder. Use another Lead or Administrator.',403)
         if r['state']!='Requested':raise PurchaseError('Only Requested reorders can be reviewed.',409)
         decision=text(d,'decision')
         if decision not in ('Approved','Rejected'):raise PurchaseError('Choose Approved or Rejected.')
@@ -90,7 +89,6 @@ def handle(db,u,action,d):
         audit(db,uid,action,{'reorder_id':rid,'po_reference':reference})
         return {'state':'Ordered'}
     if action=='reorder_cancel':
-        if u['role']!='Administrator' and (uid!=r['requested_by'] or r['state'] not in ('Requested','Approved')):raise PurchaseError('Only the requester can cancel before ordering; an administrator cancels ordered balances.',403)
         if r['state'] not in ('Requested','Approved','Ordered','Partially received'):raise PurchaseError('This reorder cannot be cancelled.',409)
         reason=text(d,'reason')
         db.execute("UPDATE reorders SET state='Cancelled',cancelled_by=?,cancelled=?,cancellation_reason=?,revision=revision+1 WHERE id=?",(uid,now(),reason,rid))

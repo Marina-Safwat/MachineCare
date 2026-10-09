@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'api.dart';
 
@@ -60,8 +61,8 @@ class _WorkspaceState extends State<Workspace> {
   String? filterStation, filterStatus;
   final equipmentSearch = TextEditingController();
   @override void dispose() { equipmentSearch.dispose(); super.dispose(); }
-  static const pages = ['Overview', 'Equipment', 'Inventory', 'Approvals', 'History', 'Administration', 'Notifications', 'Reorders'];
-  static const icons = [Icons.dashboard_outlined, Icons.precision_manufacturing_outlined, Icons.inventory_2_outlined, Icons.fact_check_outlined, Icons.history, Icons.settings_outlined, Icons.notifications_outlined, Icons.shopping_cart_outlined];
+  static const pages = ['Overview', 'Equipment', 'Inventory', 'Approvals', 'History', 'Administration', 'Notifications', 'Reorders', 'Audit log', 'Stock movements'];
+  static const icons = [Icons.dashboard_outlined, Icons.precision_manufacturing_outlined, Icons.inventory_2_outlined, Icons.fact_check_outlined, Icons.history, Icons.settings_outlined, Icons.notifications_outlined, Icons.shopping_cart_outlined, Icons.manage_search, Icons.swap_vert];
   String reorderFilter = 'Active';
   bool get purchasingAllowed => ['Administrator', 'Lead'].contains(state['user']?['role']);
   bool get admin => state['user']?['role'] == 'Administrator';
@@ -251,7 +252,7 @@ class _WorkspaceState extends State<Workspace> {
     final visible = all.where((r) => reorderFilter == 'All' || (reorderFilter == 'Active' ? ['Requested', 'Approved', 'Ordered', 'Partially received'].contains(r['state']) : r['state'] == reorderFilter)).toList();
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       panel('Reorders & deliveries', [
-        const Text('Lead requests are approved immediately. Administrator requests need another Administrator’s approval. Administrators record ordering and deliveries.'),
+        const Text('Lead requests are approved immediately. Administrator requests need another Lead or Administrator’s approval. Leads and Administrators record ordering, deliveries and cancellations.'),
         const SizedBox(height: 14),
         Wrap(spacing: 16, runSpacing: 12, children: [FilledButton.icon(onPressed: () => requestReorder(), icon: const Icon(Icons.add_shopping_cart), label: const Text('Request reorder')), SizedBox(width: 240, child: DropdownButtonFormField<String>(value: reorderFilter, decoration: const InputDecoration(labelText: 'Status'), items: ['Active', 'All', 'Requested', 'Approved', 'Ordered', 'Partially received', 'Received', 'Rejected', 'Cancelled'].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(), onChanged: (s) => setState(() => reorderFilter = s!)))]),
       ]),
@@ -266,16 +267,16 @@ class _WorkspaceState extends State<Workspace> {
         if (r['review_comment'] != null) Text('Review: ${r['review_comment']}'),
         if (r['po_reference'] != null) Text('Order / PO reference: ${r['po_reference']}'),
         if (r['cancellation_reason'] != null) Text('Cancellation: ${r['cancellation_reason']}'),
-        if (r['state'] == 'Requested' && r['requested_by'] == state['user']['id']) const Text('Another administrator must review your request.'),
+        if (r['state'] == 'Requested' && r['requested_by'] == state['user']['id']) const Text('Another Lead or Administrator must review your request.'),
         const SizedBox(height: 12),
         Wrap(spacing: 10, runSpacing: 8, children: [
-          if (admin && r['state'] == 'Requested' && r['requested_by'] != state['user']['id']) ...[
+          if (purchasingAllowed && r['state'] == 'Requested' && r['requested_by'] != state['user']['id']) ...[
             FilledButton(onPressed: () => reviewReorder(r, 'Approved'), child: const Text('Approve order')),
             OutlinedButton(onPressed: () => reviewReorder(r, 'Rejected'), child: const Text('Reject order')),
           ],
-          if (admin && r['state'] == 'Approved') FilledButton.tonal(onPressed: () => form('Record ordering · #${r['id']}', 'reorder_order', [['po_reference', 'Order / PO reference']], extra: {'reorder_id': r['id'], 'revision': r['revision']}, intro: 'Record this only after the order has been placed through your purchasing process. This app does not send an order to the supplier.'), child: const Text('Mark ordered')),
-          if (admin && ['Ordered', 'Partially received'].contains(r['state'])) FilledButton(onPressed: () => receiveReorder(r), child: const Text('Receive delivery')),
-          if (['Requested', 'Approved', 'Ordered', 'Partially received'].contains(r['state']) && (admin || (r['requested_by'] == state['user']['id'] && ['Requested', 'Approved'].contains(r['state'])))) TextButton(onPressed: () => form('Cancel remaining order · #${r['id']}', 'reorder_cancel', [['reason', 'Required cancellation reason']], extra: {'reorder_id': r['id'], 'revision': r['revision']}, intro: 'Received stock is retained. The unreceived balance is cancelled. If already ordered, arrange cancellation with the supplier separately.'), child: const Text('Cancel remaining')),
+          if (purchasingAllowed && r['state'] == 'Approved') FilledButton.tonal(onPressed: () => form('Record ordering · #${r['id']}', 'reorder_order', [['po_reference', 'Order / PO reference']], extra: {'reorder_id': r['id'], 'revision': r['revision']}, intro: 'Record this only after the order has been placed through your purchasing process. This app does not send an order to the supplier.'), child: const Text('Mark ordered')),
+          if (purchasingAllowed && ['Ordered', 'Partially received'].contains(r['state'])) FilledButton(onPressed: () => receiveReorder(r), child: const Text('Receive delivery')),
+          if (['Requested', 'Approved', 'Ordered', 'Partially received'].contains(r['state']) && purchasingAllowed) TextButton(onPressed: () => form('Cancel remaining order · #${r['id']}', 'reorder_cancel', [['reason', 'Required cancellation reason']], extra: {'reorder_id': r['id'], 'revision': r['revision']}, intro: 'Received stock is retained. The unreceived balance is cancelled. If already ordered, arrange cancellation with the supplier separately.'), child: const Text('Cancel remaining')),
         ]),
         ExpansionTile(title: const Text('Delivery history'), children: [
           if (!rows(state, 'deliveries').any((d) => d['reorder_id'] == r['id'])) const ListTile(title: Text('No deliveries recorded.')),
@@ -286,6 +287,8 @@ class _WorkspaceState extends State<Workspace> {
   }
   Future<void> reviewReorder(Map<String, dynamic> r, String decision) => form('$decision reorder #${r['id']}', 'reorder_review', [['comment', 'Review comment']], extra: {'reorder_id': r['id'], 'revision': r['revision'], 'decision': decision});
   Future<void> receiveReorder(Map<String, dynamic> r) => form('Receive delivery · #${r['id']}', 'reorder_receive', [['quantity', 'Quantity physically received', 'int'], ['delivery_reference', 'Unique delivery reference for this order'], ['notes', 'Delivery notes', 'optional']], extra: {'reorder_id': r['id'], 'operation_key': 'delivery:${DateTime.now().microsecondsSinceEpoch}:${state['user']['id']}'}, intro: '${r['part']} • ${(r['quantity'] as int) - (r['received_quantity'] as int)} units remaining. Use a distinct packing-slip/item reference for each delivery. Only record stock that physically arrived.');
+  Widget auditLog() => admin ? RecordBrowser(key: const ValueKey('audit-browser'), api: widget.api, audit: true, parts: rows(state, 'parts')) : const Text('Administrator permission required.');
+  Widget stockMovements() => purchasingAllowed ? RecordBrowser(key: const ValueKey('ledger-browser'), api: widget.api, audit: false, parts: rows(state, 'parts')) : const Text('Lead or Administrator permission required.');
   String alertFilter = 'Active';
   Future<void> acknowledgeAlert(int id) async {
     try { await widget.api.action('alert_ack', {'alert_id': id}); await refresh(); }
@@ -299,8 +302,8 @@ class _WorkspaceState extends State<Workspace> {
   ]);
   Widget notifications() => Column(children: [alertsPanel(), const SizedBox(height: 16), const Text('Automatic email unavailable in this pilot.'), if (rows(state, 'notifications').isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('No notifications.')), for (final n in rows(state, 'notifications')) Card(child: ListTile(leading: const Icon(Icons.notifications_outlined), title: Text(n['message'] as String), subtitle: Text(date(n['created']))))]);
   @override Widget build(BuildContext context) {
-    final content = loading && state.isEmpty ? const Center(child: CircularProgressIndicator()) : error != null ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(error!), TextButton(onPressed: refresh, child: const Text('Retry'))])) : SingleChildScrollView(padding: const EdgeInsets.all(28), child: [overview, equipment, inventory, approvals, history, administration, notifications, reorders][page]());
-    final nav = ListView(children: [const Padding(padding: EdgeInsets.all(24), child: Text('MachineCare', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800))), for (var i = 0; i < pages.length; i++) if ((i != 5 || admin) && (i != 7 || purchasingAllowed)) ListTile(selected: page == i, leading: Icon(icons[i]), title: Text(pages[i]), onTap: () { setState(() => page = i); if (MediaQuery.sizeOf(context).width < 900) Navigator.pop(context); }), const Divider(), const Padding(padding: EdgeInsets.all(20), child: Text('LOCAL PILOT\nSample equipment\nEmail not configured', style: TextStyle(fontSize: 12)))]);
+    final content = loading && state.isEmpty ? const Center(child: CircularProgressIndicator()) : error != null ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(error!), TextButton(onPressed: refresh, child: const Text('Retry'))])) : SingleChildScrollView(padding: const EdgeInsets.all(28), child: [overview, equipment, inventory, approvals, history, administration, notifications, reorders, auditLog, stockMovements][page]());
+    final nav = ListView(children: [const Padding(padding: EdgeInsets.all(24), child: Text('MachineCare', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800))), for (var i = 0; i < pages.length; i++) if ((i != 5 || admin) && (i != 7 || purchasingAllowed) && (i != 8 || admin) && (i != 9 || purchasingAllowed)) ListTile(selected: page == i, leading: Icon(icons[i]), title: Text(pages[i]), onTap: () { setState(() => page = i); if (MediaQuery.sizeOf(context).width < 900) Navigator.pop(context); }), const Divider(), const Padding(padding: EdgeInsets.all(20), child: Text('LOCAL PILOT\nSample equipment\nEmail not configured', style: TextStyle(fontSize: 12)))]);
     return LayoutBuilder(builder: (ctx, size) => Scaffold(appBar: AppBar(title: Text(pages[page]), actions: [Center(child: Text('${state['user']?['username'] ?? ''} • ${state['user']?['role'] ?? ''}')), IconButton(tooltip: 'Refresh', onPressed: loading ? null : refresh, icon: const Icon(Icons.refresh)), IconButton(tooltip: 'Change password', onPressed: () async { if (await changePassword(context, widget.api) && context.mounted) Navigator.pop(context); }, icon: const Icon(Icons.password)), IconButton(tooltip: 'Sign out', onPressed: () async { try { await widget.api.action('logout', {}); } finally { widget.api.token = null; if (context.mounted) Navigator.pop(context); } }, icon: const Icon(Icons.logout))]), drawer: size.maxWidth < 900 ? Drawer(child: nav) : null, body: Column(children: [if (loading) const LinearProgressIndicator(), Expanded(child: Row(children: [if (size.maxWidth >= 900) SizedBox(width: 235, child: Material(color: Colors.white, child: nav)), Expanded(child: content)]))])));
   }
 }
@@ -463,6 +466,87 @@ class ReorderRequestEditor extends StatefulWidget {
   const ReorderRequestEditor({super.key, required this.parts, this.initialPartId, required this.onSave});
   @override State<ReorderRequestEditor> createState() => _ReorderRequestEditorState();
 }
+
+/// Read-only record browser. Each page uses a stable server ID cursor.
+class RecordBrowser extends StatefulWidget {
+  final Api api;
+  final bool audit;
+  final List<Map<String, dynamic>> parts;
+  const RecordBrowser({super.key, required this.api, required this.audit, required this.parts});
+  @override State<RecordBrowser> createState() => _RecordBrowserState();
+}
+class _RecordBrowserState extends State<RecordBrowser> {
+  final search = TextEditingController();
+  final event = TextEditingController();
+  List<Map<String, dynamic>> items = [];
+  int? cursor, partId;
+  DateTime? from, to;
+  String direction = 'All';
+  bool busy = false, more = false, filtersChanged = false;
+  String? error;
+  @override void initState() { super.initState(); load(); }
+  @override void dispose() { search.dispose(); event.dispose(); super.dispose(); }
+  String day(DateTime d) => '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  String time(dynamic value) => DateTime.tryParse('$value')?.toLocal().toString() ?? '$value';
+  Future<void> chooseDate(bool start) async {
+    final chosen = await showDatePicker(context: context, initialDate: (start ? from : to) ?? DateTime.now(), firstDate: DateTime(2000), lastDate: DateTime(2100));
+    if (!mounted || chosen == null) return;
+    setState(() { if (start) { from = chosen; } else { to = chosen; } filtersChanged = true; });
+  }
+  Future<void> load({bool next = false}) async {
+    if (busy) return;
+    setState(() { busy = true; error = null; });
+    try {
+      final result = await widget.api.action(widget.audit ? 'audit_list' : 'ledger_list', {
+        'limit': 50, 'search': search.text.trim(),
+        if (from != null) 'from_date': day(from!), if (to != null) 'to_date': day(to!),
+        if (next && cursor != null) 'cursor': cursor,
+        if (widget.audit) 'event': event.text.trim(),
+        if (!widget.audit) ...{'direction': direction, if (partId != null) 'part_id': partId},
+      });
+      if (!mounted) return;
+      setState(() {
+        final page = rows(result, 'records');
+        items = next ? [...items, ...page] : page;
+        cursor = result['next_cursor'] as int?; more = result['has_more'] == true; filtersChanged = false;
+      });
+    } catch (e) { if (mounted) setState(() => error = cleanError(e)); }
+    finally { if (mounted) setState(() => busy = false); }
+  }
+  void clear() {
+    setState(() { search.clear(); event.clear(); from = null; to = null; partId = null; direction = 'All'; filtersChanged = true; });
+    load();
+  }
+  @override Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    Text(widget.audit ? 'Audit log' : 'Stock movement history', style: Theme.of(context).textTheme.headlineSmall),
+    const SizedBox(height: 12),
+    Text(widget.audit ? 'Recorded actions and their details. Sensitive credential fields are redacted. This view does not record every login attempt or background condition check.' : 'Recorded physical stock changes. Reservations are shown in Inventory and do not create stock movements. Balance after is calculated from all recorded movements for that SKU.'),
+    const SizedBox(height: 16),
+    TextField(controller: search, enabled: !busy, decoration: InputDecoration(labelText: widget.audit ? 'Search action or actor' : 'Search part, SKU, reason or actor', prefixIcon: const Icon(Icons.search)), onChanged: (_) => setState(() => filtersChanged = true), onSubmitted: (_) => load()),
+    const SizedBox(height: 14),
+    if (widget.audit) TextField(controller: event, enabled: !busy, decoration: const InputDecoration(labelText: 'Exact action (optional)', hintText: 'For example: reorder_receive or edit_part'), onChanged: (_) => setState(() => filtersChanged = true)),
+    if (!widget.audit) Wrap(spacing: 16, runSpacing: 14, children: [
+      SizedBox(width: 280, child: DropdownButtonFormField<int>(value: partId, isExpanded: true, decoration: const InputDecoration(labelText: 'Part'), items: [const DropdownMenuItem<int>(value: null, child: Text('All parts')), ...widget.parts.map((p) => DropdownMenuItem<int>(value: p['id'] as int, child: Text('${p['name']} · ${p['sku']}', overflow: TextOverflow.ellipsis)))], onChanged: busy ? null : (v) => setState(() { partId = v; filtersChanged = true; }))),
+      SizedBox(width: 200, child: DropdownButtonFormField<String>(value: direction, decoration: const InputDecoration(labelText: 'Direction'), items: ['All', 'In', 'Out'].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(), onChanged: busy ? null : (v) => setState(() { direction = v!; filtersChanged = true; }))),
+    ]),
+    const SizedBox(height: 12),
+    Wrap(spacing: 12, runSpacing: 8, children: [
+      OutlinedButton(onPressed: busy ? null : () => chooseDate(true), child: Text(from == null ? 'From date (UTC)' : 'From ${day(from!)}')),
+      OutlinedButton(onPressed: busy ? null : () => chooseDate(false), child: Text(to == null ? 'To date (UTC)' : 'To ${day(to!)}')),
+      FilledButton(onPressed: busy ? null : () => load(), child: const Text('Apply / refresh records')),
+      TextButton(onPressed: busy ? null : clear, child: const Text('Clear filters')),
+    ]),
+    if (busy) const LinearProgressIndicator(),
+    if (error != null) Padding(padding: const EdgeInsets.all(12), child: Text(error!, style: const TextStyle(color: Colors.red))),
+    Text('${items.length} records loaded${more ? ' • more available' : ''}. Filters apply when you select Apply / refresh records.'),
+    if (!busy && items.isEmpty && error == null) const Padding(padding: EdgeInsets.all(20), child: Text('No records match these filters.')),
+    for (final r in items) Card(child: widget.audit ? ExpansionTile(
+      key: ValueKey('audit:${r['id']}'), title: Text('#${r['id']} · ${r['action']}'), subtitle: Text('${r['actor']} • ${time(r['created'])}'),
+      children: [Padding(padding: const EdgeInsets.all(16), child: Align(alignment: Alignment.centerLeft, child: SelectableText(const JsonEncoder.withIndent('  ').convert(r['detail']))))],
+    ) : ListTile(key: ValueKey('movement:${r['id']}'), title: Text('${r['part']} · ${r['sku']} · ${(r['delta'] as num) > 0 ? '+' : ''}${r['delta']}'), subtitle: Text('${r['reason']}\n${r['actor']} • ${time(r['created'])}'), trailing: Text('Balance after\n${r['balance_after']}'))),
+    if (more) Padding(padding: const EdgeInsets.all(16), child: OutlinedButton(onPressed: busy || filtersChanged ? null : () => load(next: true), child: const Text('Load more'))),
+  ]);
+}
 class _ReorderRequestEditorState extends State<ReorderRequestEditor> {
   late int partId;
   final quantity = TextEditingController(), reason = TextEditingController();
@@ -488,7 +572,7 @@ class _ReorderRequestEditorState extends State<ReorderRequestEditor> {
     Text('Suggested quantity: ${part['suggested_order_quantity'] ?? 0}. You can request a different quantity with a reason.'),
     const SizedBox(height: 14), TextField(controller: quantity, enabled: !busy, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Requested quantity')),
     const SizedBox(height: 14), TextField(controller: reason, enabled: !busy, decoration: const InputDecoration(labelText: 'Reorder reason')),
-    const SizedBox(height: 14), const Text('Lead requests are approved immediately; Administrator requests need a separate Administrator’s approval. Physical deliveries add stock after ordering.'),
+    const SizedBox(height: 14), const Text('Lead requests are approved immediately; Administrator requests need a separate Lead or Administrator’s approval. Physical deliveries add stock after ordering.'),
     if (error != null) Padding(padding: const EdgeInsets.only(top: 14), child: Text(error!, style: const TextStyle(color: Colors.red))),
   ]))), actions: [TextButton(onPressed: busy ? null : () => Navigator.pop(context), child: const Text('Cancel')), FilledButton(onPressed: busy ? null : save, child: Text(busy ? 'Submitting…' : 'Submit reorder'))]);
 }

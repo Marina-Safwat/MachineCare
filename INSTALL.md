@@ -1,13 +1,13 @@
-# Update 5: Lead reorder policy, reservations and persistent alerts
+# Update 6: Full Lead reorder access and record viewers
 
-This is a cumulative update for your existing Flutter/Python MachineCare pilot. It includes the previous purchasing, catalog, account, line-access, filter and dialog updates. You can install it directly over the existing pilot without installing each earlier ZIP first.
+This cumulative update includes all earlier pilot updates: accounts, line access, catalog editing, filters/dialog fixes, purchasing, stock reservations and persistent alerts. Install it over your existing MachineCare project; this is an update package, not a standalone Flutter project.
 
-## Install
+## Install step by step
 
-1. Stop Flutter (`q`) and the backend (Ctrl+C).
-2. Back up your complete project and `backend/machinecare.db` while stopped. Keep backups outside `app/lib`.
-3. Copy every included file from this package's `backend` and `app` folders into the matching folders under `F:\work\machinecare_flutter`, replacing matching files. Include all migration files and the new `backend/inventory_status.py`. Keep your existing database, server.py, main.dart, api.dart, pubspec.yaml and login test.
-4. Run the checks below. Backend tests use temporary test databases, not your live database.
+1. Stop Flutter with `q` and stop the backend with Ctrl+C.
+2. Back up the complete project and `backend/machinecare.db` while stopped. Keep backup Dart files outside `app/lib`.
+3. Copy every included file from this package's `backend` and `app` folders into the matching folders under `F:\work\machinecare_flutter`, replacing matching files. Include the new `backend/records.py`, all other Python modules and all migrations. Keep your existing database, server.py, main.dart, api.dart, pubspec.yaml and login test.
+4. Run the checks:
 
 ```powershell
 cd F:\work\machinecare_flutter
@@ -17,7 +17,7 @@ flutter analyze
 flutter test
 ```
 
-If temporary space on C: is low, run this in the Flutter terminal first:
+If C: is still short of temporary space, run this in the Flutter terminal first:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path F:\FlutterTemp
@@ -25,7 +25,7 @@ $env:TEMP = 'F:\FlutterTemp'
 $env:TMP = 'F:\FlutterTemp'
 ```
 
-5. Restart the backend:
+5. Start the backend:
 
 ```powershell
 cd F:\work\machinecare_flutter\backend
@@ -33,51 +33,63 @@ $env:MACHINECARE_ORIGIN = 'http://localhost:18080'
 python server.py run
 ```
 
-Startup upgrades the database to schema version 5. It adds alert tables and approves existing Requested reorders whose requester currently has the Lead role. Those existing orders receive a policy-upgrade audit record and a new revision. Existing physical stock, accounts, maintenance history and deliveries are retained. Do not run init or seed; do not delete the database.
+This update keeps schema version 5. Older databases upgrade automatically using included migrations. Existing stock, accounts, reservations, deliveries and history are retained. Upgrades from versions below 5 also apply the earlier Lead-request approval policy. Do not run init or seed and do not delete the database.
 
-6. Restart Flutter in a second terminal:
+6. Start Flutter in another terminal:
 
 ```powershell
 cd F:\work\machinecare_flutter\app
 flutter run -d chrome --web-hostname localhost --web-port 18080 --dart-define=API_URL=http://127.0.0.1:8000
 ```
 
-## Your updated reorder rule
+## Lead reorder permissions
 
-Lead-submitted reorders are Approved immediately. No separate approval is needed. The authenticated Lead is recorded as the approval actor, with a bypass explanation and audit entry. Administrator-submitted reorders still start Requested and require another Administrator's review. Changing a user's role later does not retroactively change an order's recorded decision.
+| Action | Lead | Administrator | Technician |
+|---|---|---|---|
+| Request reorder | Immediately Approved | Requested, needs another manager's review | No |
+| Review another request | Yes | Yes | No |
+| Review own Requested order | No | No | No |
+| Record placed order/PO | Yes | Yes | No |
+| Record partial/final physical delivery | Yes | Yes | No |
+| Cancel any active remaining balance | Yes | Yes | No |
+| View all facility purchasing records | Yes | Yes | No |
 
-Administrators still place orders through the existing purchasing process, record Mark ordered and receive physical deliveries. Leads can cancel their own pre-order requests. Supplier ordering/email remains manual. Duplicate references, partial receiving and over-receipt protection remain in place.
+Lead requests require no separate approval. Administrator requests can now be reviewed by another Lead or Administrator. Lead/Administrator can act on orders submitted by other employees; purchasing is facility-wide. Machine building/line permissions still govern maintenance work.
 
-## Reservations
+The actual signed-in user's identity is recorded for ordering, review, receiving and cancellation. Reorder notifications now reach active Leads and Administrators. Closed Received/Rejected/Cancelled orders cannot be received or cancelled again. Duplicate reference, duplicate-operation, remaining-quantity and stale-revision checks remain enforced.
 
-- Inventory and equipment show physical stock, reserved quantity and available quantity.
-- Every Approved maintenance request reserves its quantity. Available = max(0, physical - approved reservations).
-- Normal maintenance requests are approved/reserved on submission. Early Pending requests reserve nothing until their Lead approves; approval checks current availability again.
-- Completion deducts physical stock and releases that request's reservation together. Cancellation releases the reservation without changing physical stock. Rejected/Pending/Completed/Cancelled work reserves nothing.
-- Reservations derive from persisted Approved requests, so there is no second balance table that can drift out of sync.
-- Receipts increase availability; stock adjustments cannot reduce physical stock below reserved quantities. Cancel work before making a reduction that would consume its reservation.
-- Existing Approved work is retained on upgrade. If earlier work already exceeds physical stock, available is zero and a Reservation shortfall alert appears. Receive stock or cancel unnecessary work. Nothing is silently deleted, cancelled or deducted during upgrade.
-- Failed completion leaves the request and reservation intact; cancel it if it must be resubmitted for early review.
-- Requests do not queue for insufficient stock. Request submission/approval must succeed with sufficient current availability.
-- Reorder suggestion now uses available stock: max(0, target - available - outstanding approved/ordered balance - pending reorder requests). Reorders do not reserve stock; approved maintenance does.
+Supplier orders and supplier cancellations still happen through your purchasing process. Mark ordered records a placed order; it does not send an order. Receive delivery records physical arrivals. For purchased orders, use Reorders -> Receive delivery, rather than the generic Inventory receipt action, to keep ordered balances correct. The generic receipt action and stock adjustments remain Administrator-only because they are separate inventory operations.
 
-## Persistent alerts
+## Stock movements
 
-Open Notifications -> Persistent alerts. Filter Active, Unacknowledged, Resolved or All. Overview includes an active-alert count.
+Lead or Administrator -> Stock movements:
 
-- Low stock: available quantity is at or below the threshold. Shared inventory alerts are visible to all signed-in staff.
-- Reservation shortfall: legacy approved maintenance exceeds physical stock.
-- Overdue maintenance: a known last replacement plus the part's current interval has elapsed. No history means the due date is unknown. Retired machines do not generate active overdue alerts.
-- Machine alerts follow current building/line permissions, including acknowledgement authorization.
-- Repeated checks update the same active alert instead of creating duplicates. When the condition clears, the episode is marked Resolved and retained. A recurrence creates a fresh unacknowledged episode.
-- Acknowledge marks seen for your account only. It does not resolve the condition or hide it from other users.
-- Conditions are evaluated on state refresh and successful backend transactions. There is no unattended scheduler, push service or automatic email. If the app is idle, a new time-based overdue alert appears at the next refresh/activity; opened time is detection time, not necessarily the instant the threshold was crossed.
-- Catalog interval/threshold changes can resolve or reopen alerts based on the new settings. Alert history is retained; it is not an immutable snapshot of every intermediate message.
+- Inspect opening balances, purchased deliveries, unlinked receipts, adjustments and completed replacement deductions.
+- Each record shows the current part name/SKU, signed quantity, reason, authenticated actor, time and balance after the movement.
+- Balance after is calculated from the complete ledger for that SKU before filtering. An Out-only filter does not recalculate balances using only deductions.
+- Reservations change available quantities, not physical stock, so they appear in Inventory/Approvals rather than as movement rows.
+- Filters: search part/SKU/reason/actor, select a part, In/Out/All and inclusive UTC date range. Click Apply / refresh records. Timestamps display in the browser's local time; date filters use UTC dates.
+- Load more fetches older rows in descending ID order, 50 per page. New arrivals do not shift already loaded pages. Apply / refresh records returns to the newest page. Changing filters disables Load more until applied, preventing mixed result sets.
+- Names/SKUs and actor usernames shown beside historical records come from the current catalog/account. Movement quantity, reason and timestamp remain the recorded values.
+- Balance after represents recorded ledger movements. Direct database edits or pre-existing unrecorded changes can make it differ from physical stock; the viewer does not invent missing movements or repair inventory automatically.
 
-## Verification
+## Audit log
 
-82 backend tests passed in 67.437 seconds, including 16 new checks for Lead bypass, reservations, persistent alerts, migration and concurrency. Python syntax compilation passed. See TEST_RESULTS.txt for the actual backend run and VERIFY_SCENARIOS.md for manual checks. Flutter is not installed in the delivery environment, so Flutter analysis and supplied widget tests are NOT executed here. Run both locally before relying on the update.
+Administrator -> Audit log:
+
+- Browse recorded account/scope changes, catalog edits, maintenance actions and purchasing actions.
+- Search action or actor; optionally enter an exact action such as `reorder_receive`, `edit_part`, `edit_user`, `complete` or `reorder_cancel`; filter inclusive UTC dates.
+- Expand a record to inspect its recorded detail, including before/after metadata where those actions already capture it.
+- Credential-related fields are recursively redacted before delivery to the client. Unstructured legacy details are withheld instead of displayed as arbitrary text.
+- This is a read-only viewer of existing audit records. It does not claim to log every event: login attempts, every password change, alert acknowledgement and background condition evaluations are not all captured by the existing audit writers. Database-local manual changes are not automatically audited. This pilot is not a tamper-proof audit system.
+- Leads and Technicians are denied audit browsing by the server, even if they call the API directly. Stock movement history is available to Leads/Administrators and is facility-wide.
+
+## Actual verification
+
+96 backend tests passed in 71.853 seconds, including 14 new checks for Lead ordering/receiving/cancellation, role enforcement, concurrent deliveries, record filtering/pagination, balance calculations, redaction, restart persistence and a real HTTP flow. Python syntax compilation passed. See TEST_RESULTS.txt.
+
+Flutter is not installed in the delivery environment. Supplied widget tests and Flutter analysis are NOT executed here. Run them locally and follow VERIFY_SCENARIOS.md before relying on this version.
 
 ## Rollback
 
-Stop both services and restore the complete previous code with its matching stopped-database backup. Restoring that backup loses subsequent changes. Do not downgrade just the code or overwrite a live database.
+Stop both services and restore the complete previous code with its matching stopped-database backup. Restoring a backup loses changes recorded since it was taken. Never overwrite a live database or downgrade just the code.

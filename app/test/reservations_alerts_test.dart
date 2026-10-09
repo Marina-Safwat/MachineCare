@@ -6,6 +6,8 @@ import 'package:machinecare/workspace.dart';
 class FakeApi extends Api {
   final String role;
   bool failAcknowledgement = false;
+  String reorderState = 'Approved';
+  int requestedBy = 1;
   final alerts = <Map<String, dynamic>>[
     {'id': 1, 'kind': 'Low stock', 'message': 'Active shortage', 'opened': '2026-10-09T10:00:00+00:00', 'resolved': null, 'acknowledged': 0},
     {'id': 2, 'kind': 'Low stock', 'message': 'Resolved shortage', 'opened': '2026-10-08T10:00:00+00:00', 'resolved': '2026-10-09T10:00:00+00:00', 'acknowledged': 0},
@@ -22,7 +24,7 @@ class FakeApi extends Api {
       'machines': [], 'requests': [], 'history': [], 'buildings': [], 'lines': [], 'types': [], 'users': [], 'notifications': [], 'deliveries': [],
       'parts': [{'id': 1, 'name': 'Seal', 'sku': 'SEAL', 'stock': 12, 'reserved_quantity': 7, 'available_quantity': 5, 'reservation_shortfall': 0, 'bin': 'A1', 'threshold': 5, 'target': 20, 'interval_days': 90, 'cost': 2.0, 'supplier': '', 'suggested_order_quantity': 15}],
       'alerts': alerts.map((a) => Map<String, dynamic>.from(a)).toList(),
-      'reorders': [{'id': 1, 'part': 'Seal', 'sku': 'SEAL', 'state': 'Approved', 'quantity': 10, 'received_quantity': 0, 'requested_by': 1, 'requester': 'Demo', 'created': '2026-10-09T10:00:00+00:00', 'supplier_snapshot': '', 'supplier_number_snapshot': '', 'unit_cost_snapshot': 2.0, 'reason': 'Replenish', 'review_comment': 'Lead request: approval not required', 'revision': 0}],
+      'reorders': [{'id': 1, 'part': 'Seal', 'sku': 'SEAL', 'state': reorderState, 'quantity': 10, 'received_quantity': reorderState == 'Partially received' ? 3 : 0, 'requested_by': requestedBy, 'requester': 'Demo', 'created': '2026-10-09T10:00:00+00:00', 'supplier_snapshot': '', 'supplier_number_snapshot': '', 'unit_cost_snapshot': 2.0, 'reason': 'Replenish', 'review_comment': 'Lead request: approval not required', 'revision': 0}],
     };
   }
 }
@@ -64,14 +66,30 @@ void main() {
     expect(find.text('Seen'), findsNothing);
     expect(find.text('Acknowledge'), findsOneWidget);
   });
-  testWidgets('Lead reorder shows bypass confirmation and cannot receive or order', (tester) async {
+  testWidgets('Lead reorder shows bypass confirmation and can record ordering', (tester) async {
     await launch(tester, FakeApi(role: 'Lead'));
     await tester.tap(find.text('Reorders')); await tester.pumpAndSettle();
     expect(find.text('Review: Lead request: approval not required'), findsOneWidget);
     expect(find.text('Approve order'), findsNothing);
-    expect(find.text('Mark ordered'), findsNothing);
+    expect(find.text('Mark ordered'), findsOneWidget);
     expect(find.text('Receive delivery'), findsNothing);
     expect(find.text('Cancel remaining'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+  testWidgets('Lead can receive and cancel an ordered balance', (tester) async {
+    final api = FakeApi(role: 'Lead')..reorderState = 'Partially received';
+    await launch(tester, api);
+    await tester.tap(find.text('Reorders')); await tester.pumpAndSettle();
+    expect(find.text('Receive delivery'), findsOneWidget);
+    expect(find.text('Cancel remaining'), findsOneWidget);
+    expect(find.text('Mark ordered'), findsNothing);
+  });
+  testWidgets('Lead can review another request', (tester) async {
+    final api = FakeApi(role: 'Lead')..reorderState = 'Requested'..requestedBy = 9;
+    await launch(tester, api);
+    await tester.tap(find.text('Reorders')); await tester.pumpAndSettle();
+    expect(find.text('Approve order'), findsOneWidget);
+    expect(find.text('Reject order'), findsOneWidget);
+  });
+
 }

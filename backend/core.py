@@ -7,6 +7,7 @@ import access_policy as scopes
 import catalog
 import purchasing
 import inventory_status
+import records
 
 class Error(Exception):
     def __init__(self, message, status=400):
@@ -141,6 +142,9 @@ class Store:
         with self.tx() as db:
             u=self.user(db,raw,action in ('password','logout'))
             uid=u['id']
+            if action in ('audit_list','ledger_list'):
+                try:return records.browse(db,u,action,d)
+                except records.RecordError as e:raise Error(str(e),e.status) from e
             if action=='alert_ack':
                 aid=integer(d,'alert_id')
                 alert=db.execute('SELECT * FROM alerts WHERE id=?',(aid,)).fetchone()

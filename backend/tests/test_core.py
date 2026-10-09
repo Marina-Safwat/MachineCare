@@ -443,9 +443,9 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(Error):self.reorder(user='tech')
         r=self.reorder(user='admin')
         with self.assertRaises(Error):self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Self')
-        with self.assertRaises(Error):self.act('lead','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Lead')
+        self.act('lead','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='Lead review')
         rid=self.order_ready(key='lead-order')
-        for user in ['lead','tech']:
+        for user in ['tech']:
             with self.assertRaises(Error):self.receive(rid,user=user,key='not-admin-'+user)
         self.assertEqual(self.store.state(self.tokens['tech'])['reorders'],[])
         self.assertEqual(self.store.state(self.tokens['tech'])['deliveries'],[])
@@ -468,13 +468,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(part['stock'],15);self.assertEqual(part['outstanding_order_quantity'],0);self.assertEqual(part['suggested_order_quantity'],5)
         self.assertEqual(len(state['deliveries']),1)
         with self.assertRaises(Error):self.receive(rid,quantity=7,reference='SLIP-2',key='late')
-    def test_lead_cancellation_limited_to_own_preorder_requests(self):
+    def test_lead_can_cancel_any_active_reorder(self):
         r=self.reorder(user='lead')
         self.act('lead','reorder_cancel',reorder_id=r['id'],revision=0,reason='No longer needed')
         r=self.reorder(user='admin',key='another-requester')
-        with self.assertRaises(Error):self.act('lead','reorder_cancel',reorder_id=r['id'],revision=0,reason='Not mine')
+        self.act('lead','reorder_cancel',reorder_id=r['id'],revision=0,reason='Purchasing cancelled')
         rid=self.order_ready(key='ordered-lead')
-        with self.assertRaises(Error):self.act('lead','reorder_cancel',reorder_id=rid,revision=2,reason='Already ordered')
+        self.act('lead','reorder_cancel',reorder_id=rid,revision=2,reason='Supplier cancellation')
     def test_purchase_revision_blocks_stale_approval_and_ordering(self):
         r=self.reorder()
         self.act('reviewer','reorder_review',reorder_id=r['id'],revision=0,decision='Approved',comment='First')
@@ -550,9 +550,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(saved['reviewed_by'],2);self.assertEqual(saved['revision'],0)
         self.assertEqual(self.part_balance()['stock'],12)
         self.assertTrue(any('ready for ordering' in n['message'] for n in self.store.state(self.tokens['admin'])['notifications']))
-        with self.assertRaises(Error): self.act('lead','reorder_order',reorder_id=r['id'],revision=0,po_reference='PO')
         with self.assertRaises(Error): self.act('admin','reorder_review',reorder_id=r['id'],revision=0,decision='Rejected',comment='Review no longer needed')
-        self.act('admin','reorder_order',reorder_id=r['id'],revision=0,po_reference='LEAD-PO')
+        self.act('lead','reorder_order',reorder_id=r['id'],revision=0,po_reference='LEAD-PO')
         self.receive(r['id'],quantity=10)
         self.assertEqual(self.part_balance()['stock'],22)
         with self.store.tx() as db:
@@ -696,5 +695,126 @@ class WorkflowTests(unittest.TestCase):
         p=self.part_balance();self.assertEqual(p['reserved_quantity'],0)
         self.assertEqual(p['stock'],11 if row['state']=='Completed' else 12)
         self.assertEqual(len(state['history']),1 if row['state']=='Completed' else 0)
+
+    def test_lead_full_reorder_flow_records_authenticated_actor(self):
+        r=self.reorder(user='lead')
+        self.act('lead','reorder_order',reorder_id=r['id'],revision=0,po_reference='LEAD-PO',ordered_by=1)
+        self.receive(r['id'],user='lead',quantity=4,received_by=1)
+        self.receive(r['id'],user='lead',quantity=6,reference='LEAD-SECOND',key='lead-second')
+        state=self.store.state(self.tokens['lead']);order=state['reorders'][0]
+        self.assertEqual(order['state'],'Received');self.assertEqual(order['ordered_by'],2)
+        self.assertTrue(all(d['received_by']==2 for d in state['deliveries']))
+        movements=self.act('lead','ledger_list',part_id=1)['records']
+        self.assertEqual(movements[0]['actor'],'lead');self.assertEqual(movements[0]['balance_after'],22)
+        events=self.act('admin','audit_list',event='reorder_receive')['records']
+        self.assertEqual(len(events),2);self.assertTrue(all(r['actor_id']==2 for r in events))
+    def test_lead_cancel_partial_other_requester_and_terminal_guards(self):
+        rid=self.order_ready()
+        self.receive(rid,user='lead',quantity=3)
+        self.act('lead','reorder_cancel',reorder_id=rid,revision=3,reason='Supplier failed')
+        self.assertEqual(self.part_balance()['stock'],15)
+        self.assertEqual(self.store.state(self.tokens['lead'])['reorders'][0]['cancelled_by'],2)
+        with self.assertRaises(Error):self.receive(rid,user='lead',quantity=1,reference='late',key='late')
+        with self.assertRaises(Error):self.act('lead','reorder_cancel',reorder_id=rid,revision=4,reason='Again')
+    def test_lead_can_reject_admin_request_and_tech_cannot_purchase(self):
+        r=self.reorder()
+        self.act('lead','reorder_review',reorder_id=r['id'],revision=0,decision='Rejected',comment='Not needed')
+        self.assertEqual(self.store.state(self.tokens['lead'])['reorders'][0]['reviewed_by'],2)
+        for action in ['reorder_review','reorder_order','reorder_receive','reorder_cancel']:
+            with self.assertRaises(Error) as e:self.act('tech',action,reorder_id=r['id'])
+            self.assertEqual(e.exception.status,403)
+    def test_lead_and_admin_concurrent_receipts_cannot_overfill(self):
+        rid=self.order_ready(quantity=5)
+        def receipt(user):
+            try:self.receive(rid,user=user,quantity=5,reference=user,key='race-'+user);return True
+            except Error:return False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(receipt,['lead','admin']))
+        self.assertEqual(sum(results),1);self.assertEqual(self.part_balance()['stock'],17)
+    def test_record_view_permissions_are_server_side(self):
+        for user,action in [('lead','audit_list'),('tech','audit_list'),('tech','ledger_list')]:
+            with self.assertRaises(Error) as e:self.act(user,action)
+            self.assertEqual(e.exception.status,403)
+        self.assertTrue(self.act('lead','ledger_list')['records'])
+        self.act('admin','audit_list')
+    def test_record_views_do_not_mutate_ledger_or_audit(self):
+        self.request()
+        with self.store.tx() as db:
+            before={t:[tuple(r) for r in db.execute('SELECT * FROM '+t)] for t in ['ledger','audit','requests','parts']}
+        for _ in range(2):self.act('admin','audit_list');self.act('lead','ledger_list')
+        with self.store.tx() as db:
+            after={t:[tuple(r) for r in db.execute('SELECT * FROM '+t)] for t in before}
+        self.assertEqual(before,after)
+    def test_movement_balances_use_all_rows_despite_direction_filter(self):
+        self.act('admin','receipt',part_id=1,quantity=3,reason='Arrived',operation_key='plus-three')
+        self.act('admin','adjust',part_id=1,delta=-2,reason='Count correction',operation_key='minus-two')
+        r=self.request();self.act('tech','complete',request_id=r['id'])
+        out=self.act('lead','ledger_list',part_id=1,direction='Out')['records']
+        self.assertEqual([(r['delta'],r['balance_after']) for r in out],[(-1,12),(-2,13)])
+        self.assertEqual(out[0]['actor'],'tech')
+        self.assertTrue(all(r['part_id']==1 for r in out))
+        self.assertNotIn('operation_key',out[0])
+    def test_cursor_pagination_has_no_duplicates_when_new_records_arrive(self):
+        for n in range(6):self.act('admin','receipt',part_id=1,quantity=1,reason=f'Batch {n}',operation_key=f'page-{n}')
+        first=self.act('lead','ledger_list',part_id=1,limit=2)
+        self.assertTrue(first['has_more'])
+        self.act('admin','receipt',part_id=1,quantity=1,reason='New arrival',operation_key='new-arrival')
+        second=self.act('lead','ledger_list',part_id=1,limit=2,cursor=first['next_cursor'])
+        self.assertTrue(all(r['id']<first['next_cursor'] for r in second['records']))
+        ids=[r['id'] for r in first['records']+second['records']];self.assertEqual(len(ids),len(set(ids)))
+        newest=self.act('lead','ledger_list',part_id=1,limit=2)['records'][0]
+        self.assertEqual(newest['reason'],'New arrival')
+    def test_audit_pagination_event_and_actor_search(self):
+        for n in range(5):self.reorder(user='lead',key=f'audit-{n}')
+        first=self.act('admin','audit_list',event='reorder_request',search='lead',limit=2)
+        second=self.act('admin','audit_list',event='reorder_request',search='lead',limit=2,cursor=first['next_cursor'])
+        final=self.act('admin','audit_list',event='reorder_request',search='lead',limit=2,cursor=second['next_cursor'])
+        self.assertEqual([len(x['records']) for x in [first,second,final]],[2,2,1]);self.assertFalse(final['has_more'])
+        self.assertEqual(final['next_cursor'],None)
+        self.assertTrue(all(r['action']=='reorder_request' and r['actor']=='lead' for x in [first,second,final] for r in x['records']))
+    def test_record_filters_literal_search_dates_and_zero_matches(self):
+        self.act('admin','receipt',part_id=1,quantity=2,reason='50%_test',operation_key='literal')
+        self.assertEqual(len(self.act('lead','ledger_list',search='%_')['records']),1)
+        self.assertEqual(self.act('lead','ledger_list',search="' OR 1=1 --")['records'],[])
+        self.assertEqual(self.act('admin','audit_list',event='missing')['records'],[])
+        today=datetime.now(timezone.utc).date().isoformat()
+        rows=self.act('lead','ledger_list',from_date=today,to_date=today,direction='In')['records']
+        self.assertTrue(rows);self.assertTrue(all(r['delta']>0 and r['created'][:10]==today for r in rows))
+        self.assertEqual(self.act('lead','ledger_list',to_date='2000-01-01')['records'],[])
+    def test_record_input_validation(self):
+        cases=[{'limit':True},{'limit':0},{'limit':101},{'cursor':-1},{'cursor':'2'},{'search':None},{'search':'x'*201},{'from_date':'2026-1-01'},{'from_date':'2026-02-30'},{'from_date':'2026-10-10','to_date':'2026-10-09'},{'direction':'Other'},{'part_id':False},{'part_id':999}]
+        for d in cases:
+            with self.subTest(d=d):
+                with self.assertRaises(Error):self.act('lead','ledger_list',**d)
+        with self.assertRaises(Error):self.act('admin','audit_list',event='x'*81)
+    def test_audit_detail_redacts_nested_credentials_and_hides_legacy_text(self):
+        with self.store.tx() as db:
+            self.store.audit(db,1,'sensitive_test',{'password':'BAD1','before':{'session_token':'BAD2','role':'Lead'},'items':[{'apiKey':'BAD3','secret':'BAD4','reason':'Safe'}]})
+            db.execute("INSERT INTO audit(actor_id,action,detail,created) VALUES(1,'legacy_test','bad plaintext',?)",(datetime.now(timezone.utc).isoformat(),))
+        detail=self.act('admin','audit_list',event='sensitive_test')['records'][0]['detail']
+        self.assertEqual(detail['password'],'[redacted]');self.assertEqual(detail['before']['session_token'],'[redacted]')
+        self.assertEqual(detail['items'][0]['apiKey'],'[redacted]');self.assertEqual(detail['before']['role'],'Lead')
+        legacy=self.act('admin','audit_list',event='legacy_test')['records'][0]['detail']
+        self.assertNotIn('bad plaintext',json.dumps(legacy))
+    def test_historical_balances_survive_catalog_rename_and_restart(self):
+        self.act('admin','receipt',part_id=1,quantity=2,reason='Receipt',operation_key='rename-ledger')
+        self.act('admin','edit_part',**self.edit_part_data(name='New name',sku='NEW-SEAL'))
+        rows=self.act('lead','ledger_list',part_id=1)['records']
+        self.assertEqual(rows[0]['balance_after'],14);self.assertEqual(rows[0]['part'],'New name');self.assertEqual(rows[0]['sku'],'NEW-SEAL')
+        self.store=Store(self.store.path)
+        self.assertEqual(self.act('lead','ledger_list',part_id=1)['records'],rows)
+    def test_http_lead_reorders_and_record_view_authorization(self):
+        server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        def api(action,data,user='lead'):
+            req=Request(f'http://127.0.0.1:{server.server_port}/actions/{action}',data=json.dumps(data).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+self.tokens[user]})
+            with urlopen(req) as response:return json.load(response)
+        try:
+            r=api('reorder_request',{'part_id':1,'quantity':2,'reason':'Supply','operation_key':'http-lead'})
+            api('reorder_order',{'reorder_id':r['id'],'revision':0,'po_reference':'PO'})
+            api('reorder_receive',{'reorder_id':r['id'],'quantity':2,'delivery_reference':'SLIP','operation_key':'http-slip'})
+            self.assertEqual(api('ledger_list',{'part_id':1})['records'][0]['actor'],'lead')
+            with self.assertRaises(HTTPError) as e:api('audit_list',{})
+            self.assertEqual(e.exception.code,403)
+            self.assertEqual(api('audit_list',{'event':'reorder_receive'},'admin')['records'][0]['actor'],'lead')
+        finally:server.shutdown();server.server_close();thread.join()
 
 if __name__=='__main__': unittest.main()
