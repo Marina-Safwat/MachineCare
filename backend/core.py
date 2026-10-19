@@ -8,6 +8,8 @@ import catalog
 import purchasing
 import inventory_status
 import records
+import reports
+import validation
 
 class Error(Exception):
     def __init__(self, message, status=400):
@@ -16,7 +18,7 @@ class Error(Exception):
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def password_hash(password):
-    if not isinstance(password,str) or len(password)<12: raise Error('Use a password of at least 12 characters.')
+    if not isinstance(password,str) or not 12<=len(password)<=1024: raise Error('Use a password of 12 to 1024 characters.')
     salt=secrets.token_bytes(16)
     digest=hashlib.pbkdf2_hmac('sha256',password.encode(),salt,600000)
     return 'pbkdf2_sha256$600000$'+base64.b64encode(salt).decode()+'$'+base64.b64encode(digest).decode()
@@ -40,7 +42,7 @@ class Store:
         try:
             db.execute('PRAGMA foreign_keys=ON')
             version=db.execute('PRAGMA user_version').fetchone()[0]
-            if version>5: raise Error('Database is newer than this application. Upgrade the app; do not downgrade.')
+            if version>7: raise Error('Database is newer than this application. Upgrade the app; do not downgrade.')
             db.executescript(Path(__file__).with_name('schema.sql').read_text())
             if version<1: db.execute('PRAGMA user_version=1')
             if version<2:
@@ -51,6 +53,10 @@ class Store:
                 db.executescript((Path(__file__).parent/'migrations'/'004_purchasing.sql').read_text())
             if version<5:
                 db.executescript((Path(__file__).parent/'migrations'/'005_inventory_alerts.sql').read_text())
+            if version<6:
+                db.executescript((Path(__file__).parent/'migrations'/'006_jobs.sql').read_text())
+            if version<7:
+                db.executescript((Path(__file__).parent/'migrations'/'007_part_provenance.sql').read_text())
         except Exception:
             if db.in_transaction: db.rollback()
             raise
@@ -72,18 +78,29 @@ class Store:
             db.rollback(); raise
         finally: db.close()
     def audit(self,db,user,action,detail):
-        db.execute('INSERT INTO audit(actor_id,action,detail,created) VALUES(?,?,?,?)',(user,action,json.dumps(detail),now()))
+        db.execute('INSERT INTO audit(actor_id,action,detail,created) VALUES(?,?,?,?)',(user,action,json.dumps(records.redact(detail)),now()))
     def bootstrap(self,username,password):
         with self.tx() as db:
             if db.execute('SELECT 1 FROM users').fetchone(): raise Error('First administrator already exists.')
             db.execute("INSERT INTO users(username,password,role,must_change) VALUES(?,?,'Administrator',0)",(username,password_hash(password)))
     def login(self,username,password):
+        if not isinstance(username,str) or not isinstance(password,str) or len(username)>240 or len(password)>1024:
+            raise Error('Invalid username or password.',401)
+        result=None
         with self.tx() as db:
             u=db.execute('SELECT * FROM users WHERE username=?',(username,)).fetchone()
-            if not u or not u['active'] or not password_ok(password,u['password']): raise Error('Invalid username or password.',401)
-            raw=secrets.token_urlsafe(32); token=hashlib.sha256(raw.encode()).hexdigest()
-            db.execute('INSERT INTO sessions VALUES(?,?,?,?)',(token,u['id'],time.time()+8*3600,u['version']))
-            return {'token':raw,'user':self.public_user(u)}
+            # Same password work for unknown/disabled users; no submitted identifier in audit.
+            dummy='pbkdf2_sha256$600000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+            valid=password_ok(password,u['password'] if u else dummy)
+            if u and u['active'] and valid:
+                raw=secrets.token_urlsafe(32); token=hashlib.sha256(raw.encode()).hexdigest()
+                db.execute('DELETE FROM sessions WHERE expires<=?',(time.time(),))
+                db.execute('INSERT INTO sessions VALUES(?,?,?,?)',(token,u['id'],time.time()+8*3600,u['version']))
+                self.audit(db,u['id'],'login_success',{})
+                result={'token':raw,'user':self.public_user(u)}
+            else:self.audit(db,None,'login_failed',{})
+        if result is None:raise Error('Invalid username or password.',401)
+        return result
     @staticmethod
     def public_user(u): return {k:u[k] for k in ('id','username','role','lead_id','active','must_change')}
     def user(self,db,raw,allow_change=False):
@@ -112,7 +129,8 @@ class Store:
             if not scopes.covers(db,scopes.grants(db,tech['lead_id']),scopes.grants(db,tech['id'])):
                 raise Error('Moving this line would leave a lead without access to assigned technician lines. Update assignments first.')
     def public_part(self,db,p):
-        return {**dict(p),**inventory_status.balance(db,p),**purchasing.planning(db,p),'type_ids':[r[0] for r in db.execute('SELECT type_id FROM compatibility WHERE part_id=? ORDER BY type_id',(p['id'],))]}
+        provenance=db.execute('SELECT * FROM part_provenance WHERE part_id=?',(p['id'],)).fetchone()
+        return {**dict(p),'provenance':dict(provenance) if provenance else None,**inventory_status.balance(db,p),**purchasing.planning(db,p),'type_ids':[r[0] for r in db.execute('SELECT type_id FROM compatibility WHERE part_id=? ORDER BY type_id',(p['id'],))]}
     def catalog_validation(self,fn,*args):
         try: return fn(*args)
         except catalog.CatalogError as e: raise Error(str(e)) from e
@@ -132,16 +150,44 @@ class Store:
                 machines.append(item)
             inventory_status.sync(db)
             visible={m['id'] for m in machines}
-            requests=[dict(r) for r in db.execute('SELECT r.*,u.username technician,p.name part FROM requests r JOIN users u ON u.id=r.technician_id JOIN parts p ON p.id=r.part_id ORDER BY r.id DESC') if r['machine_id'] in visible and (u['role']=='Administrator' or r['technician_id']==u['id'] or r['lead_id']==u['id'])]
+            requests=[dict(r) for r in db.execute('SELECT r.*,u.username technician,p.name part FROM requests r JOIN users u ON u.id=r.technician_id JOIN parts p ON p.id=r.part_id ORDER BY r.id DESC') if r['machine_id'] in visible and (u['role'] in ('Lead','Administrator') or r['technician_id']==u['id'] or r['lead_id']==u['id'])]
             history=[dict(r) for r in db.execute('SELECT m.*,p.name part,u.username technician FROM maintenance m JOIN parts p ON p.id=m.part_id JOIN users u ON u.id=m.technician_id ORDER BY m.id DESC') if r['machine_id'] in visible]
             scope=scopes.grants(db,u['id'])
             accessible_lines=[dict(l) for l in db.execute('SELECT * FROM lines') if u['role']=='Administrator' or scopes.allows(scope,l['building_id'],l['id'])]
             building_ids=scope[0]|{l['building_id'] for l in accessible_lines}
             return {**purchasing.snapshot(db,u),'alerts':inventory_status.snapshot(db,u),'user':self.public_scope(db,u),'machines':machines,'parts':[self.public_part(db,r) for r in db.execute('SELECT * FROM parts ORDER BY name')], 'requests':requests,'history':history,'buildings':[dict(r) for r in db.execute('SELECT * FROM buildings') if u['role']=='Administrator' or r['id'] in building_ids], 'lines':accessible_lines, 'types':[dict(r) for r in db.execute('SELECT * FROM types')],'users':[self.public_scope(db,r) for r in db.execute('SELECT * FROM users')] if u['role']=='Administrator' else [],'notifications':[dict(r) for r in db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC',(u['id'],))], 'email_available':False}
     def execute(self,raw,action,d):
+        try:return self._execute(raw,action,d)
+        except Error as failure:
+            if failure.status==403 or action=='password':
+                # Commit a credential-free denial after the domain rollback.
+                with self.tx() as db:
+                    try:actor=self.user(db,raw,True)['id']
+                    except Error:actor=None
+                    self.audit(db,actor,'password_change_failed' if action=='password' else 'permission_denied',{})
+            raise
+    def _execute(self,raw,action,d):
+        try:
+            if not isinstance(d,dict):raise ValueError()
+            validation.payload(d)
+        except ValueError as e:raise Error('Invalid input. Check required fields and data types.') from e
         with self.tx() as db:
             u=self.user(db,raw,action in ('password','logout'))
             uid=u['id']
+            if action=='system_status':
+                self.admin(u)
+                return {'jobs':[dict(r) for r in db.execute('SELECT * FROM job_state ORDER BY name')],
+                        'email_queue':[dict(r) for r in db.execute('SELECT state,COUNT(*) count FROM email_outbox GROUP BY state')]}
+            if action=='report_export':
+                visible=set()
+                if d.get('report')=='maintenance':
+                    for machine in db.execute('SELECT id FROM machines').fetchall():
+                        try:self.machine(db,u,machine['id']);visible.add(machine['id'])
+                        except Error:continue
+                try:result=reports.export(db,u,d,visible)
+                except records.RecordError as e:raise Error(str(e),e.status) from e
+                self.audit(db,uid,'report_export',{'report':d['report'],'row_count':result['row_count']})
+                return result
             if action in ('audit_list','ledger_list'):
                 try:return records.browse(db,u,action,d)
                 except records.RecordError as e:raise Error(str(e),e.status) from e
@@ -156,13 +202,15 @@ class Store:
                 try: return purchasing.handle(db,u,action,d)
                 except purchasing.PurchaseError as e: raise Error(e.message,e.status) from e
             if action=='logout':
+                self.audit(db,uid,'logout',{})
                 db.execute('DELETE FROM sessions WHERE token=?',(hashlib.sha256(raw.encode()).hexdigest(),)); return {}
             if action=='password':
                 if not password_ok(required(d,'current_password'),u['password']): raise Error('Current password is incorrect.')
                 db.execute('UPDATE users SET password=?,must_change=0,version=version+1 WHERE id=?',(password_hash(required(d,'new_password')),uid))
-                db.execute('DELETE FROM sessions WHERE user_id=?',(uid,)); return {'message':'Password changed. Sign in again.'}
+                db.execute('DELETE FROM sessions WHERE user_id=?',(uid,)); self.audit(db,uid,'password_changed',{}); return {'message':'Password changed. Sign in again.'}
             if action in ('building','line','type','machine','part','edit_part','user','edit_user','reset','disable','receipt','adjust'):
-                self.admin(u)
+                if action in ('building','line','user','edit_user','reset','disable'):self.admin(u)
+                elif u['role'] not in ('Lead','Administrator'):raise Error('Lead or Administrator permission required.',403)
                 if action=='building':
                     values=(required(d,'code'),required(d,'name'))
                     if d.get('id'): db.execute('UPDATE buildings SET code=?,name=? WHERE id=?',(*values,integer(d,'id')))
@@ -188,6 +236,11 @@ class Store:
                         self.audit(db,uid,'edit_type',{'type_id':type_id,'before':dict(old),'after':dict(db.execute('SELECT * FROM types WHERE id=?',(type_id,)).fetchone())})
                         return {'message':'Machine type saved.'}
                 elif action=='machine':
+                    line_id=integer(d,'line_id')
+                    line=db.execute('SELECT * FROM lines WHERE id=?',(line_id,)).fetchone()
+                    if not line:raise Error('Line not found.',404)
+                    if u['role']!='Administrator' and not scopes.allows(scopes.grants(db,uid),line['building_id'],line_id):raise Error('Destination line outside your assigned access.',403)
+                    if d.get('id'):self.machine(db,u,integer(d,'id'))
                     values=(integer(d,'line_id'),integer(d,'type_id'),required(d,'station'),required(d,'asset_tag'),d.get('serial',''),d.get('status','Operating'))
                     if d.get('id'): db.execute('UPDATE machines SET line_id=?,type_id=?,station=?,asset_tag=?,serial=?,status=? WHERE id=?',(*values,integer(d,'id')))
                     else: db.execute('INSERT INTO machines(line_id,type_id,station,asset_tag,serial,status) VALUES(?,?,?,?,?,?)',values)
@@ -299,22 +352,24 @@ class Store:
                 reason=required(d,'reason'); key=required(d,'operation_key')
                 last=db.execute('SELECT MAX(replaced) FROM maintenance WHERE machine_id=? AND part_id=?',(mid,pid)).fetchone()[0]
                 early=bool(last and (datetime.now(timezone.utc)-datetime.fromisoformat(last)).total_seconds()<p['interval_days']*86400)
-                lead=u['lead_id']
+                lead=u['lead_id'];manager=u['role'] in ('Lead','Administrator');pending=early and not manager
                 if early:
                     if not d.get('early_explanation','').strip(): raise Error('Early replacement requires an explanation.')
+                if pending:
                     if not lead or lead==uid or not db.execute("SELECT 1 FROM users WHERE id=? AND active=1 AND role='Lead'",(lead,)).fetchone(): raise Error('No active assigned lead. Ask an administrator to assign one; request blocked.')
                     lead_user=db.execute('SELECT * FROM users WHERE id=?',(lead,)).fetchone(); self.machine(db,lead_user,mid)
-                cur=db.execute('INSERT INTO requests(machine_id,part_id,quantity,technician_id,lead_id,early,state,reason,notes,created,operation_key) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(mid,pid,qty,uid,lead,int(early),'Pending' if early else 'Approved',reason,d.get('notes','')+ ('\nEarly explanation: '+d['early_explanation'] if early else ''),now(),key))
-                if early: db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(lead,f'Early replacement #{cur.lastrowid} requires review.',now()))
-                self.audit(db,uid,'request',{'request_id':cur.lastrowid})
-                return {'id':cur.lastrowid,'state':'Pending' if early else 'Approved','early':early}
+                cur=db.execute('INSERT INTO requests(machine_id,part_id,quantity,technician_id,lead_id,early,state,reason,notes,created,operation_key) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(mid,pid,qty,uid,lead,int(early),'Pending' if pending else 'Approved',reason,d.get('notes','')+ ('\nEarly explanation: '+d['early_explanation'] if early else ''),now(),key))
+                if early and manager:db.execute('UPDATE requests SET reviewer_id=?,review_comment=?,reviewed=? WHERE id=?',(uid,'Manager initiated early replacement; required explanation recorded',now(),cur.lastrowid))
+                if pending: db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(lead,f'Early replacement #{cur.lastrowid} requires review.',now()))
+                self.audit(db,uid,'request',{'request_id':cur.lastrowid,'early':early,'manager_initiated':manager,'requester_id':uid})
+                return {'id':cur.lastrowid,'state':'Pending' if pending else 'Approved','early':early}
             if action in ('review','complete','cancel'):
                 rid=integer(d,'request_id'); r=db.execute('SELECT * FROM requests WHERE id=?',(rid,)).fetchone()
                 if not r: raise Error('Request not found.',404)
                 m=self.machine(db,u,r['machine_id'])
                 if action=='review':
                     if uid==r['technician_id']: raise Error('You cannot approve your own request.',403)
-                    if u['role']!='Lead' or uid!=r['lead_id']: raise Error('Only the assigned lead can review.',403)
+                    if u['role'] not in ('Lead','Administrator'): raise Error('Lead or Administrator permission required for review.',403)
                     if r['state']!='Pending': raise Error('Request is no longer pending.',409)
                     decision=required(d,'decision')
                     if decision not in ('Approved','Rejected'): raise Error('Invalid decision.')
@@ -324,11 +379,11 @@ class Store:
                     db.execute('UPDATE requests SET state=?,reviewer_id=?,review_comment=?,reviewed=? WHERE id=?',(decision,uid,required(d,'comment'),now(),rid))
                     db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(r['technician_id'],f'Request #{rid}: {decision}',now()))
                 elif action=='cancel':
-                    if uid!=r['technician_id'] and u['role']!='Administrator': raise Error('Only the requester or administrator can cancel.',403)
+                    if uid!=r['technician_id'] and u['role'] not in ('Lead','Administrator'): raise Error('Only the requester, Lead or Administrator can cancel.',403)
                     if r['state'] not in ('Pending','Approved'): raise Error('Cannot cancel this request.')
                     db.execute("UPDATE requests SET state='Cancelled' WHERE id=?",(rid,))
                 else:
-                    if uid!=r['technician_id']: raise Error('Only the authenticated requester can record completion.',403)
+                    if uid!=r['technician_id'] and u['role'] not in ('Lead','Administrator'): raise Error('Only the requester, Lead or Administrator can record completion.',403)
                     if r['state']!='Approved': raise Error('Only approved work can be completed.',409)
                     if m['status']=='Retired': raise Error('Retired machine; cancel the request.')
                     if not db.execute('SELECT 1 FROM compatibility WHERE part_id=? AND type_id=?',(r['part_id'],m['type_id'])).fetchone(): raise Error('Machine type changed; part is no longer compatible. Cancel this request.')
@@ -342,7 +397,8 @@ class Store:
                     db.execute('INSERT INTO maintenance(request_id,machine_id,part_id,technician_id,quantity,unit_cost,replaced,location_snapshot,reason,early) VALUES(?,?,?,?,?,?,?,?,?,?)',(rid,m['id'],r['part_id'],uid,r['quantity'],p['cost'],stamp,self.name(m),r['reason'],r['early']))
                     db.execute('INSERT INTO ledger(part_id,delta,reason,actor_id,created,operation_key) VALUES(?,?,?,?,?,?)',(r['part_id'],-r['quantity'],f'Replacement #{rid}',uid,stamp,f'complete:{rid}'))
                     db.execute("UPDATE requests SET state='Completed' WHERE id=?",(rid,))
-                self.audit(db,uid,action,{'request_id':rid}); return {'message':'Saved.'}
+                if uid!=r['technician_id'] and action in ('complete','cancel'):db.execute('INSERT INTO notifications(user_id,message,created) VALUES(?,?,?)',(r['technician_id'],f'Request #{rid}: {action} recorded by {u["username"]}.',now()))
+                self.audit(db,uid,action,{'request_id':rid,'requester_id':r['technician_id'],'actor_id':uid}); return {'message':'Saved.'}
             raise Error('Unknown action.',404)
     def seed(self):
         with self.tx() as db:

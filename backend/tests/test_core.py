@@ -152,7 +152,7 @@ class WorkflowTests(unittest.TestCase):
         first=self.request(); self.act('tech','complete',request_id=first['id'])
         early=self.request(key='reassignment',early_explanation='Failed seal')
         self.act('admin','edit_user',user_id=3,role='Technician',lead_id=4,building_ids=[1,3])
-        with self.assertRaises(Error): self.act('lead','review',request_id=early['id'],decision='Approved',comment='Old lead')
+        self.assertEqual(next(r for r in self.store.state(self.tokens['lead'])['requests'] if r['id']==early['id'])['state'],'Pending')
         self.tokens['other']=self.store.login('other','Example-long-password-2026')['token']
         state=self.store.state(self.tokens['other'])
         self.assertEqual(next(r for r in state['requests'] if r['id']==early['id'])['lead_id'],4)
@@ -253,12 +253,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(after['parts'],before['parts'])
         self.assertEqual(after['users'],before['users'])
         self.assertEqual(len(reopened.state(self.tokens['tech'])['machines']),4)
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],5)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],7)
     def test_migration_rerun_keeps_line_grants_and_version(self):
         self.line_only()
         reopened=Store(self.store.path)
         self.assertEqual(reopened.state(self.tokens['tech'])['user']['line_ids'],[1])
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],5)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],7)
     def test_http_forbidden_line_request_is_rejected(self):
         self.line_only()
         server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -317,8 +317,8 @@ class WorkflowTests(unittest.TestCase):
         for change in [dict(stock=500),dict(quantity=500),dict(delta=500)]:
             with self.assertRaises(Error):self.act('admin','edit_part',**self.edit_part_data(**change))
         self.assertEqual(next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==1)['stock'],12)
-    def test_part_edit_blocked_for_technician_and_lead(self):
-        for user in ['tech','lead']:
+    def test_part_edit_blocked_for_technician(self):
+        for user in ['tech']:
             with self.assertRaises(Error):self.act(user,'edit_part',**self.edit_part_data(name='Unauthorized'))
     def test_part_compatibility_removal_checks_approved_and_pending_work(self):
         approved=self.request()
@@ -515,7 +515,7 @@ class WorkflowTests(unittest.TestCase):
         before=self.store.state(self.tokens['admin'])
         reopened=Store(self.store.path)
         self.assertEqual(reopened.state(self.tokens['admin']),before)
-        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],5)
+        with reopened.tx() as db:self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],7)
     def test_purchase_notifications_and_audit_not_duplicated_by_retry(self):
         r=self.reorder()
         admins=self.store.state(self.tokens['admin'])['notifications']
@@ -666,7 +666,7 @@ class WorkflowTests(unittest.TestCase):
         self.store=Store(self.store.path)
         with self.store.tx() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='lead_reorder_policy_upgrade'").fetchone()[0],1)
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],5)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],7)
     def test_receiving_purchase_resolves_available_stock_alert(self):
         self.act('tech','request',machine_id=1,part_id=1,quantity=7,reason='Service',operation_key='reserve-for-receipt')
         rid=self.order_ready(quantity=2,key='supply')
@@ -731,7 +731,7 @@ class WorkflowTests(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(receipt,['lead','admin']))
         self.assertEqual(sum(results),1);self.assertEqual(self.part_balance()['stock'],17)
     def test_record_view_permissions_are_server_side(self):
-        for user,action in [('lead','audit_list'),('tech','audit_list'),('tech','ledger_list')]:
+        for user,action in [('tech','audit_list'),('tech','ledger_list')]:
             with self.assertRaises(Error) as e:self.act(user,action)
             self.assertEqual(e.exception.status,403)
         self.assertTrue(self.act('lead','ledger_list')['records'])
@@ -812,9 +812,241 @@ class WorkflowTests(unittest.TestCase):
             api('reorder_order',{'reorder_id':r['id'],'revision':0,'po_reference':'PO'})
             api('reorder_receive',{'reorder_id':r['id'],'quantity':2,'delivery_reference':'SLIP','operation_key':'http-slip'})
             self.assertEqual(api('ledger_list',{'part_id':1})['records'][0]['actor'],'lead')
-            with self.assertRaises(HTTPError) as e:api('audit_list',{})
+            with self.assertRaises(HTTPError) as e:api('audit_list',{},'tech')
             self.assertEqual(e.exception.code,403)
             self.assertEqual(api('audit_list',{'event':'reorder_receive'},'admin')['records'][0]['actor'],'lead')
+        finally:server.shutdown();server.server_close();thread.join()
+
+    def csv_rows(self,result):
+        import csv,io
+        return list(csv.DictReader(io.StringIO(result['csv'].lstrip('\ufeff'))))
+    def test_maintenance_export_matches_scope_and_captured_cost(self):
+        one=self.request();self.act('tech','complete',request_id=one['id'])
+        two=self.request(mid=3,key='other-line');self.act('tech','complete',request_id=two['id'])
+        self.act('admin','edit_part',**self.edit_part_data(cost=99,name='New part'))
+        with self.store.tx() as db:db.execute('DELETE FROM access WHERE user_id=3 AND building_id=3')
+        result=self.act('tech','report_export',report='maintenance')
+        rows=self.csv_rows(result);self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['machine_id'],'1');self.assertEqual(rows[0]['unit_cost'],'24.5');self.assertEqual(rows[0]['total_cost'],'24.5')
+        self.assertEqual(rows[0]['part'],'New part');self.assertEqual(self.act('admin','report_export',report='maintenance')['row_count'],2)
+    def test_inventory_export_contains_reservations_and_planning(self):
+        self.act('tech','request',machine_id=1,part_id=1,quantity=7,reason='Reserve',operation_key='export-reserve')
+        rows=self.csv_rows(self.act('tech','report_export',report='inventory',part_id=1))
+        self.assertEqual(len(rows),1)
+        self.assertEqual((rows[0]['stock'],rows[0]['reserved_quantity'],rows[0]['available_quantity']),('12','7','5'))
+        self.assertEqual(rows[0]['suggested_order_quantity'],'15')
+        self.assertIn('supplier_number',rows[0]);self.assertIn('interval_days',rows[0]);self.assertIn('lead_days',rows[0])
+    def test_export_all_pages_and_ledger_balance_filter(self):
+        for n in range(105):self.act('admin','receipt',part_id=1,quantity=1,reason='Bulk',operation_key=f'export-{n}')
+        result=self.act('lead','report_export',report='stock_movements',part_id=1,direction='In',limit=1,cursor=999)
+        rows=self.csv_rows(result);self.assertEqual(len(rows),106);self.assertEqual(result['row_count'],106)
+        self.assertEqual(rows[0]['balance_after'],'117');self.assertEqual(rows[-1]['balance_after'],'12')
+    def test_export_permissions_and_unknown_report(self):
+        for user,kind in [('tech','audit'),('tech','reorders'),('tech','stock_movements')]:
+            with self.assertRaises(Error) as e:self.act(user,'report_export',report=kind)
+            self.assertEqual(e.exception.status,403)
+        with self.assertRaises(Error):self.act('admin','report_export',report='users')
+        self.assertNotIn('password',self.act('tech','report_export',report='inventory')['csv'])
+    def test_audit_export_redaction_and_export_audit_entry(self):
+        with self.store.tx() as db:self.store.audit(db,1,'redaction_test',{'password':'PRIVATE','nested':{'token':'PRIVATE2','reason':'OK'}})
+        result=self.act('admin','report_export',report='audit',event='redaction_test')
+        self.assertEqual(result['row_count'],1);self.assertNotIn('PRIVATE',result['csv']);self.assertIn('[redacted]',result['csv'])
+        record=self.act('admin','audit_list',event='report_export')['records'][0]
+        self.assertEqual(record['detail'],{'report':'audit','row_count':1})
+    def test_csv_escaping_unicode_and_formula_injection(self):
+        self.act('admin','receipt',part_id=1,quantity=1,reason='  =SUM(1,2)',operation_key='formula')
+        self.act('admin','receipt',part_id=1,quantity=1,reason='Seal, "special"\nمرحبا',operation_key='unicode')
+        result=self.act('lead','report_export',report='stock_movements',part_id=1)
+        rows=self.csv_rows(result)
+        self.assertEqual(rows[0]['reason'],'Seal, "special"\nمرحبا');self.assertEqual(rows[1]['reason'],"'=SUM(1,2)")
+        self.assertTrue(result['csv'].startswith('\ufeff'));self.assertTrue(result['filename'].endswith('.csv'))
+        from reports import cell
+        for value in ['+cmd','-cmd','@cmd','\tcmd','\rdata','\nformula']:
+            self.assertTrue(cell(value).startswith("'"))
+        self.assertEqual(cell(-1),-1);self.assertEqual(cell('  =SUM(1,2)'),"'  =SUM(1,2)")
+    def test_export_filters_and_header_only_no_matches(self):
+        r=self.request();self.act('tech','complete',request_id=r['id'])
+        today=datetime.now(timezone.utc).date().isoformat()
+        result=self.act('tech','report_export',report='maintenance',from_date=today,to_date=today,search='Worn')
+        self.assertEqual(result['row_count'],1)
+        result=self.act('tech','report_export',report='maintenance',search='Nothing matches')
+        self.assertEqual(result['row_count'],0);self.assertEqual(self.csv_rows(result),[]);self.assertIn('unit_cost',result['csv'])
+        for data in [{'from_date':'2026-02-30'},{'from_date':'2026-10-10','to_date':'2026-10-09'},{'part_id':False}]:
+            with self.assertRaises(Error):self.act('tech','report_export',report='maintenance',**data)
+        with self.assertRaises(Error):self.act('tech','report_export',report='inventory',from_date=today)
+    def test_export_row_limit_is_error_not_partial_file(self):
+        from unittest.mock import patch
+        self.request();self.request(user='other',mid=3)
+        with patch('reports.MAX_ROWS',1):
+            with self.assertRaises(Error) as e:self.act('tech','report_export',report='inventory')
+            self.assertEqual(e.exception.status,413)
+        with self.store.tx() as db:self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='report_export'").fetchone()[0],0)
+    def test_reorder_export_contains_partial_delivery_and_cancelled_remainder(self):
+        r=self.reorder(user='lead',quantity=10)
+        self.act('lead','reorder_order',reorder_id=r['id'],revision=0,po_reference='PO-EXPORT')
+        self.receive(r['id'],user='lead',quantity=3)
+        self.act('lead','reorder_cancel',reorder_id=r['id'],revision=2,reason='No more supply')
+        row=self.csv_rows(self.act('lead','report_export',report='reorders',search='PO-EXPORT'))[0]
+        self.assertEqual((row['state'],row['received_quantity'],row['remaining_quantity']),('Cancelled','3','7'))
+        self.assertEqual(row['estimated_total'],'245.0');self.assertEqual(row['requester'],'lead')
+    def test_backup_validates_snapshot_clears_only_copy_sessions_and_preserves_history(self):
+        import backup,sqlite3
+        r=self.request();self.act('tech','complete',request_id=r['id'])
+        source_before=self.store.state(self.tokens['admin'])
+        path,summary=backup.create(self.store.path,Path(self.tmp.name)/'backups')
+        self.assertEqual(summary['schema_version'],7);self.assertEqual(summary['maintenance'],1)
+        with sqlite3.connect(path) as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0],0)
+        self.assertEqual(self.store.state(self.tokens['admin']),source_before)
+        recovered=Store(path);token=recovered.login('admin','Example-long-password-2026')['token']
+        self.assertEqual(recovered.state(token)['history'],source_before['history'])
+        self.assertEqual(recovered.state(token)['parts'],source_before['parts'])
+    def test_backup_missing_source_and_invalid_file_never_create_source(self):
+        import backup
+        missing=Path(self.tmp.name)/'missing.db'
+        with self.assertRaises(backup.BackupError):backup.create(missing,Path(self.tmp.name)/'backups')
+        self.assertFalse(missing.exists())
+        broken=Path(self.tmp.name)/'broken.db';broken.write_text('not a database')
+        with self.assertRaises(backup.BackupError):backup.verify(broken)
+        with self.assertRaises(backup.BackupError):backup.create(broken,Path(self.tmp.name)/'backups')
+        self.assertEqual(list((Path(self.tmp.name)/'backups').glob('*.db')),[])
+    def test_backup_duplicate_name_does_not_overwrite_and_failed_copy_is_removed(self):
+        import backup
+        from unittest.mock import patch
+        directory=Path(self.tmp.name)/'backups'
+        with patch('backup.secrets.token_hex',return_value='constant'),patch('backup.datetime') as clock:
+            clock.now.return_value.strftime.return_value='SAME-TIME'
+            first,_=backup.create(self.store.path,directory);before=first.read_bytes()
+            with self.assertRaises(FileExistsError):backup.create(self.store.path,directory)
+            self.assertEqual(first.read_bytes(),before)
+        with patch('shutil.copyfileobj',side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):backup.create(self.store.path,directory)
+        self.assertEqual(list(directory.glob('*.db')),[first]);self.assertEqual(list(directory.glob('.machinecare-backup-*')),[])
+    def test_backup_verify_rejects_missing_tables_newer_schema_and_broken_relationships(self):
+        import backup,sqlite3
+        path,_=backup.create(self.store.path,Path(self.tmp.name)/'backups')
+        db=sqlite3.connect(path);db.execute('UPDATE ledger SET part_id=999 WHERE id=1');db.commit();db.close()
+        with self.assertRaises(backup.BackupError):backup.verify(path)
+        path,_=backup.create(self.store.path,Path(self.tmp.name)/'backups')
+        db=sqlite3.connect(path);db.execute('PRAGMA user_version=8');db.commit();db.close()
+        with self.assertRaises(backup.BackupError):backup.verify(path)
+        path,_=backup.create(self.store.path,Path(self.tmp.name)/'backups')
+        db=sqlite3.connect(path);db.execute('DROP TABLE sessions');db.commit();db.close()
+        with self.assertRaises(backup.BackupError):backup.verify(path)
+    def test_backup_wal_snapshot_matches_ledger_during_writes(self):
+        import backup,sqlite3
+        keeper=sqlite3.connect(self.store.path);keeper.execute('PRAGMA journal_mode=WAL')
+        def writing():
+            for n in range(5):self.act('admin','receipt',part_id=1,quantity=1,reason='Concurrent',operation_key=f'backup-{n}')
+        try:
+            thread=threading.Thread(target=writing);thread.start()
+            path,_=backup.create(self.store.path,Path(self.tmp.name)/'backups');thread.join()
+            with sqlite3.connect(path) as db:
+                stock=db.execute('SELECT stock FROM parts WHERE id=1').fetchone()[0]
+                total=db.execute('SELECT SUM(delta) FROM ledger WHERE part_id=1').fetchone()[0]
+                self.assertEqual(stock,total);self.assertTrue(12<=stock<=17)
+            self.assertEqual(self.part_balance()['stock'],17)
+        finally:keeper.close()
+    def test_http_csv_export_permissions_and_payload(self):
+        server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        def api(kind,user):
+            req=Request(f'http://127.0.0.1:{server.server_port}/actions/report_export',data=json.dumps({'report':kind}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+self.tokens[user]})
+            with urlopen(req) as response:return json.load(response)
+        try:
+            result=api('inventory','tech');self.assertEqual(result['row_count'],3);self.assertEqual(len(self.csv_rows(result)),3)
+            with self.assertRaises(HTTPError) as e:api('audit','tech')
+            self.assertEqual(e.exception.code,403)
+        finally:server.shutdown();server.server_close();thread.join()
+
+    def test_lead_cannot_edit_accounts_or_structure_even_by_api(self):
+        actions={'building':{'code':'B10','name':'Extra'},'line':{'building_id':1,'code':'L99'},'user':{'username':'new'},'edit_user':{'user_id':3,'role':'Administrator'},'reset':{'user_id':3,'password':'Very-long-new-password'},'disable':{'user_id':3,'active':0}}
+        before=self.store.state(self.tokens['admin'])
+        for action,data in actions.items():
+            with self.subTest(action=action):
+                with self.assertRaises(Error) as e:self.act('lead',action,**data)
+                self.assertEqual(e.exception.status,403)
+        self.assertEqual(self.store.state(self.tokens['admin']),before)
+        self.assertEqual(self.store.state(self.tokens['lead'])['users'],[])
+    def test_lead_edits_shared_catalog_and_inventory(self):
+        self.act('lead','type',id=1,revision=0,name='Lead renamed type')
+        self.act('lead','edit_part',**self.edit_part_data(name='Lead renamed part',cost=30))
+        self.act('lead','receipt',part_id=1,quantity=2,reason='Unlinked receipt',operation_key='lead-receipt')
+        self.act('lead','adjust',part_id=1,delta=-1,reason='Count correction',operation_key='lead-adjust')
+        self.assertEqual(self.part_balance()['stock'],13);self.assertEqual(self.part_balance()['name'],'Lead renamed part')
+        self.assertEqual(self.act('lead','ledger_list',part_id=1)['records'][0]['actor'],'lead')
+    def test_lead_machine_create_edit_and_move_check_both_scopes(self):
+        with self.store.tx() as db:
+            db.execute('DELETE FROM access WHERE user_id=2');db.execute('DELETE FROM access WHERE user_id IN (3,4)')
+            db.execute('INSERT INTO line_access VALUES(2,1)')
+        self.act('lead','machine',line_id=1,type_id=1,station='99',asset_tag='LEAD-NEW',serial='NEW',status='Operating')
+        self.act('lead','machine',id=1,line_id=1,type_id=1,station='02',asset_tag='DEMO-001',serial='CHANGED',status='Maintenance')
+        for mid,line in [(1,2),(2,1)]:
+            with self.assertRaises(Error) as e:self.act('lead','machine',id=mid,line_id=line,type_id=1,station='08',asset_tag='BLOCKED',status='Operating')
+            self.assertEqual(e.exception.status,403)
+        with self.assertRaises(Error):self.act('lead','machine',line_id=2,type_id=1,station='99',asset_tag='OUTSIDE',status='Operating')
+        with self.store.tx() as db:self.assertEqual(db.execute("SELECT COUNT(*) FROM machines WHERE asset_tag='BLOCKED'").fetchone()[0],0)
+    def test_lead_completes_technician_work_with_actual_actor(self):
+        r=self.request()
+        self.act('lead','complete',request_id=r['id'],technician_id=3)
+        state=self.store.state(self.tokens['admin']);history=state['history'][0]
+        self.assertEqual(history['technician_id'],2);self.assertEqual(history['technician'],'lead')
+        self.assertEqual(state['requests'][0]['technician_id'],3)
+        self.assertEqual(self.part_balance()['stock'],11);self.assertEqual(self.part_balance()['reserved_quantity'],0)
+        event=self.act('lead','audit_list',event='complete')['records'][0]
+        self.assertEqual(event['actor_id'],2);self.assertEqual(event['detail']['requester_id'],3)
+        self.assertTrue(any('recorded by lead' in n['message'] for n in self.store.state(self.tokens['tech'])['notifications']))
+        with self.assertRaises(Error):self.act('lead','complete',request_id=r['id'])
+    def test_lead_cancels_other_approved_work_and_tech_cannot(self):
+        r=self.request()
+        with self.assertRaises(Error):self.act('other','cancel',request_id=r['id'])
+        with self.assertRaises(Error):self.act('other','complete',request_id=r['id'])
+        self.act('lead','cancel',request_id=r['id'])
+        self.assertEqual(self.part_balance()['stock'],12);self.assertEqual(self.part_balance()['reserved_quantity'],0)
+    def test_lead_sees_all_requests_in_scope_without_assignment(self):
+        with self.store.tx() as db:db.execute('UPDATE users SET lead_id=NULL WHERE id=3')
+        r=self.request()
+        self.assertTrue(any(x['id']==r['id'] for x in self.store.state(self.tokens['lead'])['requests']))
+    def test_manager_initiated_early_request_requires_explanation_and_is_recorded(self):
+        r=self.request();self.act('tech','complete',request_id=r['id'])
+        with self.assertRaises(Error):self.request(user='lead',key='no-explanation')
+        early=self.request(user='lead',key='manager-early',early_explanation='Confirmed failed seal')
+        self.assertEqual(early['state'],'Approved')
+        row=next(r for r in self.store.state(self.tokens['lead'])['requests'] if r['id']==early['id'])
+        self.assertEqual(row['reviewer_id'],2);self.assertIn('Manager initiated',row['review_comment'])
+        self.act('lead','complete',request_id=early['id'])
+        self.assertEqual(self.store.state(self.tokens['lead'])['history'][0]['technician_id'],2)
+    def test_lead_review_and_completion_cannot_escape_machine_scope(self):
+        r=self.request(mid=3)
+        with self.store.tx() as db:db.execute('DELETE FROM access WHERE user_id=2 AND building_id=3')
+        for action in ['complete','cancel','review']:
+            with self.assertRaises(Error) as e:self.act('lead',action,request_id=r['id'],decision='Approved',comment='Outside')
+            self.assertEqual(e.exception.status,403)
+        self.assertEqual(self.part_balance()['reserved_quantity'],1)
+    def test_lead_audit_export_is_redacted_and_technician_denied(self):
+        with self.store.tx() as db:self.store.audit(db,1,'account_event',{'password':'HIDDEN','role':'Technician'})
+        result=self.act('lead','report_export',report='audit',event='account_event')
+        self.assertEqual(result['row_count'],1);self.assertNotIn('HIDDEN',result['csv']);self.assertIn('[redacted]',result['csv'])
+        with self.assertRaises(Error):self.act('tech','report_export',report='audit')
+    def test_lead_inventory_adjustment_still_preserves_reservations(self):
+        self.act('tech','request',machine_id=1,part_id=1,quantity=10,reason='Reserve',operation_key='manager-reserve')
+        with self.assertRaises(Error):self.act('lead','adjust',part_id=1,delta=-3,reason='Count',operation_key='lead-reserved-adjust')
+        self.assertEqual(self.part_balance()['stock'],12)
+    def test_lead_can_review_other_technician_pending_early_work(self):
+        r=self.request();self.act('tech','complete',request_id=r['id'])
+        early=self.request(key='pending-review',early_explanation='Failure')
+        self.act('admin','edit_user',user_id=4,role='Lead',lead_id=None,building_ids=[1,3])
+        self.tokens['other']=self.store.login('other','Example-long-password-2026')['token']
+        self.act('other','review',request_id=early['id'],decision='Approved',comment='Confirmed within scope')
+        self.assertEqual(next(r for r in self.store.state(self.tokens['other'])['requests'] if r['id']==early['id'])['reviewer_id'],4)
+    def test_http_lead_operations_and_admin_boundary(self):
+        server=serve(self.store,0);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        def api(action,data):
+            req=Request(f'http://127.0.0.1:{server.server_port}/actions/{action}',data=json.dumps(data).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+self.tokens['lead']})
+            with urlopen(req) as response:return json.load(response)
+        try:
+            r=self.request();api('complete',{'request_id':r['id']})
+            self.assertEqual(api('audit_list',{'event':'complete'})['records'][0]['actor'],'lead')
+            with self.assertRaises(HTTPError) as e:api('disable',{'user_id':3,'active':0})
+            self.assertEqual(e.exception.code,403)
         finally:server.shutdown();server.server_close();thread.join()
 
 if __name__=='__main__': unittest.main()

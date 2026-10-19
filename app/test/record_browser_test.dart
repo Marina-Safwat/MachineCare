@@ -10,10 +10,12 @@ class RecordApi extends Api {
     calls.add({'action': name, ...data});
     if (fail) throw Exception('Records unavailable');
     if (data['search'] == 'missing') return {'records': [], 'has_more': false, 'next_cursor': null};
-    if (name == 'audit_list') return {
+    if (name == 'audit_list') {
+      return {
       'records': [{'id': 3, 'action': 'reorder_receive', 'actor': 'Lead A', 'created': '2026-10-09T10:00:00+00:00', 'detail': {'quantity': 4, 'password': '[redacted]'}}],
       'has_more': false, 'next_cursor': null,
-    };
+      };
+    }
     final next = data['cursor'] != null;
     return {
       'records': [{'id': next ? 1 : 2, 'part': 'Seal', 'sku': 'SEAL', 'delta': next ? 12 : -2, 'reason': next ? 'Opening balance' : 'Count correction', 'actor': next ? 'System' : 'Lead A', 'created': '2026-10-09T10:00:00+00:00', 'balance_after': next ? 12 : 10}],

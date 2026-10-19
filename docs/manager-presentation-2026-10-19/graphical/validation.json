@@ -1,0 +1,18 @@
+{
+  "slides": 23,
+  "embedded_screenshot_uses": 0,
+  "missing_screenshots": [
+    "overview.png",
+    "overview.png",
+    "equipment.png",
+    "inventory_dimm.png",
+    "inventory_aoi.png",
+    "approvals.png",
+    "history.png",
+    "reorders.png",
+    "reports.png",
+    "ledger.png"
+  ],
+  "xml_and_relationships": "passed",
+  "renderer": "PIL/PDF from same slide specification; not desktop PowerPoint"
+}

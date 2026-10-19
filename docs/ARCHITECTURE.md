@@ -1,5 +1,7 @@
 # Architecture and operator guide
 
+Historical proposal below. Current architecture remains Flutter + Python standard-library HTTP + SQLite, now schema 6 with worker.py, validation.py and durable job/outbox tables. Current permissions, startup and module responsibilities are in root AGENTS.md and PROJECT_STATUS.md; docs/BACKGROUND_SERVICES.md describes the worker. In particular, Leads now manage scoped equipment, catalog/inventory, other technicians' scoped work and the full purchasing lifecycle. PostgreSQL/framework deployment below is an unapproved future proposal, not an installed feature or current requirement.
+
 ## Pilot topology
 
 Flutter web in the laptop browser calls a loopback Python API. The API uses SQLite transactions for sessions, equipment, parts, requests, maintenance, ledger, notifications and audits. The schema uses foreign keys, unique identifiers, stock constraints and one completed maintenance record per request.

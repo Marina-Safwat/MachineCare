@@ -1,5 +1,7 @@
 # Requirement coverage and remaining work
 
+Historical checklist retained for provenance. See FEATURE_INVENTORY.md and PROJECT_STATUS.md at the project root for current implementation and verification; the pending statuses below are outdated.
+
 This is a local proposal pilot. Major requirements below are explicitly tracked; absent functionality is not claimed as implemented.
 
 | Requirement | Status and limits |

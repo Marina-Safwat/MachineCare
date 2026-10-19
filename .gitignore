@@ -3,6 +3,10 @@
 __pycache__/
 *.pyc
 .env
+*.worker.lock
+backend/worker.local.json
+backend/backups/
+.verification/
 app/.dart_tool/
 app/build/
 app/.flutter-plugins*

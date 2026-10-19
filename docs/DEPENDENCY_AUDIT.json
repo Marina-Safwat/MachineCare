@@ -1,0 +1,7 @@
+{
+  "source": "OSV querybatch",
+  "packages_checked": 27,
+  "findings": [],
+  "checked_date": "2026-10-12",
+  "scope": "Hosted Pub packages only; SDK, runtime and OS excluded"
+}

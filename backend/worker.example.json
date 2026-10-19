@@ -1,0 +1,15 @@
+{
+  "check_seconds": 60,
+  "backup_seconds": 86400,
+  "backup_directory": "F:/MachineCareBackups",
+  "email": {
+    "enabled": false,
+    "host": "smtp.example.com",
+    "port": 587,
+    "tls": "starttls",
+    "from": "machinecare@example.com",
+    "username": "",
+    "password_env": "MACHINECARE_SMTP_PASSWORD",
+    "recipients": {}
+  }
+}

@@ -3,11 +3,17 @@ import argparse, getpass, json, os, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import defaultdict, deque
 from core import Store, Error
+import validation
 
 def serve(store,port=8000):
     attempts=defaultdict(deque); lock=threading.Lock()
-    origin=os.environ.get('MACHINECARE_ORIGIN','http://localhost:8080')
+    origin=os.environ.get('MACHINECARE_ORIGIN','http://localhost:18080')
     class Handler(BaseHTTPRequestHandler):
+        server_version='MachineCare'
+        sys_version=''
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(10)
         def log_message(self,*args): pass # Never log credentials or request bodies.
         def respond(self,status,payload):
             body=json.dumps(payload).encode()
@@ -16,6 +22,11 @@ def serve(store,port=8000):
             self.send_header('Content-Length',str(len(body)))
             self.send_header('Cache-Control','no-store')
             self.send_header('X-Content-Type-Options','nosniff')
+            self.send_header('Referrer-Policy','no-referrer')
+            self.send_header('Content-Security-Policy',"default-src 'none'; frame-ancestors 'none'")
+            self.send_header('X-Frame-Options','DENY')
+            self.send_header('Vary','Origin')
+            if status==429:self.send_header('Retry-After','300')
             if self.headers.get('Origin')==origin: self.send_header('Access-Control-Allow-Origin',origin)
             self.end_headers(); self.wfile.write(body)
         def do_OPTIONS(self):
@@ -30,20 +41,29 @@ def serve(store,port=8000):
         def handle_request(self,post):
             try:
                 if self.headers.get('Origin') not in (None,origin): raise Error('Origin is not allowed.',403)
+                if self.headers.get('Host') not in (f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}'):
+                    raise Error('Host is not allowed.',403)
                 path=self.path.split('?')[0]
                 if post:
+                    if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length',[]))!=1:raise Error('Invalid request framing.')
+                    if self.headers.get_content_type()!='application/json':raise Error('Use application/json.',415)
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=32768: raise Error('Invalid request size.')
-                    d=json.loads(self.rfile.read(size))
+                    d=json.loads(self.rfile.read(size),object_pairs_hook=validation.object_pairs)
                     if not isinstance(d,dict): raise Error('Expected a JSON object.')
+                    validation.payload(d)
                     if path=='/login':
                         key=self.client_address[0]
                         with lock:
                             q=attempts[key]
                             while q and q[0]<time.time()-300: q.popleft()
-                            if len(q)>=15: raise Error('Too many login attempts. Wait five minutes.',429)
+                            if len(q)>=15:
+                                if len(q)==15:
+                                    with store.tx() as db:store.audit(db,None,'login_throttled',{})
+                                    q.append(time.time())
+                                raise Error('Too many login attempts. Wait five minutes.',429)
                             q.append(time.time())
-                        result=store.login(str(d.get('username','')),str(d.get('password','')))
+                        result=store.login(d.get('username',''),d.get('password',''))
                     elif path.startswith('/actions/'): result=store.execute(self.token(),path.rsplit('/',1)[1],d)
                     else: raise Error('Route not found.',404)
                 elif path=='/health': result={'status':'ok','mode':'local-pilot'}

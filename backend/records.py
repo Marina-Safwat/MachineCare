@@ -24,7 +24,7 @@ def redact(value):
 
 def browse(db,u,action,d):
     audit=action=='audit_list'
-    if audit and u['role']!='Administrator':raise RecordError('Administrator permission required for audit records.',403)
+    if audit and u['role'] not in ('Lead','Administrator'):raise RecordError('Lead or Administrator permission required for audit records.',403)
     if not audit and u['role'] not in ('Lead','Administrator'):raise RecordError('Lead or Administrator permission required for stock movements.',403)
     limit=positive(d,'limit',50)
     if limit>100:raise RecordError('limit must be at most 100.')

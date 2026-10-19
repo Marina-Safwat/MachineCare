@@ -8,6 +8,7 @@ class FakeApi extends Api {
   bool failAcknowledgement = false;
   String reorderState = 'Approved';
   int requestedBy = 1;
+  final requests = <Map<String,dynamic>>[];
   final alerts = <Map<String, dynamic>>[
     {'id': 1, 'kind': 'Low stock', 'message': 'Active shortage', 'opened': '2026-10-09T10:00:00+00:00', 'resolved': null, 'acknowledged': 0},
     {'id': 2, 'kind': 'Low stock', 'message': 'Resolved shortage', 'opened': '2026-10-08T10:00:00+00:00', 'resolved': '2026-10-09T10:00:00+00:00', 'acknowledged': 0},
@@ -21,7 +22,7 @@ class FakeApi extends Api {
     }
     return {
       'user': {'id': 1, 'username': 'Demo', 'role': role},
-      'machines': [], 'requests': [], 'history': [], 'buildings': [], 'lines': [], 'types': [], 'users': [], 'notifications': [], 'deliveries': [],
+      'machines': [], 'requests': requests, 'history': [], 'buildings': [], 'lines': [], 'types': [], 'users': [], 'notifications': [], 'deliveries': [],
       'parts': [{'id': 1, 'name': 'Seal', 'sku': 'SEAL', 'stock': 12, 'reserved_quantity': 7, 'available_quantity': 5, 'reservation_shortfall': 0, 'bin': 'A1', 'threshold': 5, 'target': 20, 'interval_days': 90, 'cost': 2.0, 'supplier': '', 'suggested_order_quantity': 15}],
       'alerts': alerts.map((a) => Map<String, dynamic>.from(a)).toList(),
       'reorders': [{'id': 1, 'part': 'Seal', 'sku': 'SEAL', 'state': reorderState, 'quantity': 10, 'received_quantity': reorderState == 'Partially received' ? 3 : 0, 'requested_by': requestedBy, 'requester': 'Demo', 'created': '2026-10-09T10:00:00+00:00', 'supplier_snapshot': '', 'supplier_number_snapshot': '', 'unit_cost_snapshot': 2.0, 'reason': 'Replenish', 'review_comment': 'Lead request: approval not required', 'revision': 0}],
@@ -90,6 +91,34 @@ void main() {
     await tester.tap(find.text('Reorders')); await tester.pumpAndSettle();
     expect(find.text('Approve order'), findsOneWidget);
     expect(find.text('Reject order'), findsOneWidget);
+  });
+
+  testWidgets('Lead management shows equipment tools but no account or structure tools', (tester) async {
+    await launch(tester, FakeApi(role: 'Lead'));
+    expect(find.text('Management'), findsOneWidget);
+    expect(find.text('Audit log'), findsOneWidget);
+    await tester.tap(find.text('Management')); await tester.pumpAndSettle();
+    expect(find.text('Register machine'), findsOneWidget);
+    expect(find.text('Machine types'), findsOneWidget);
+    expect(find.text('Create employee account'), findsNothing);
+    expect(find.text('Buildings & lines'), findsNothing);
+    expect(find.text('Accounts'), findsNothing);
+  });
+  testWidgets('Lead inventory allows metadata edits and stock operations', (tester) async {
+    await launch(tester, FakeApi(role: 'Lead'));
+    await tester.tap(find.text('Inventory')); await tester.pumpAndSettle();
+    expect(find.text('Add part'), findsOneWidget);
+    expect(find.text('Edit details'), findsOneWidget);
+    expect(find.text('Receive'), findsOneWidget);
+    expect(find.text('Adjust'), findsOneWidget);
+  });
+  testWidgets('Lead can complete or cancel another technician approved work', (tester) async {
+    final api = FakeApi(role: 'Lead');
+    api.requests.add({'id': 10, 'part': 'Seal', 'machine_id': 1, 'quantity': 1, 'technician': 'Technician A', 'technician_id': 3, 'lead_id': 9, 'state': 'Approved', 'early': 0, 'reason': 'Worn', 'notes': ''});
+    await launch(tester, api);
+    await tester.tap(find.text('Approvals')); await tester.pumpAndSettle();
+    expect(find.text('Record physical completion'), findsOneWidget);
+    expect(find.text('Cancel request'), findsOneWidget);
   });
 
 }

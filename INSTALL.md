@@ -1,13 +1,15 @@
-# Update 6: Full Lead reorder access and record viewers
+# Update 8: Administrator manages accounts/system; Leads manage operations
 
-This cumulative update includes all earlier pilot updates: accounts, line access, catalog editing, filters/dialog fixes, purchasing, stock reservations and persistent alerts. Install it over your existing MachineCare project; this is an update package, not a standalone Flutter project.
+Current code supports schema 7: background-service state/outbox, UI hardening and imported-part provenance. See the 2026-10-16 checkpoint and docs/MANAGER_DEMO.md. Read PROJECT_STATUS.md, docs/FEATURE_INVENTORY.md, docs/BACKGROUND_SERVICES.md and docs/SECURITY_REVIEW.md before starting. Back up older databases before migration; backup.py now supports schemas 1–6. The installed database was upgraded from schema 4 to 7 after a verified backup on 2026-10-16; ten user-supplied Auto DIMM parts were imported with explicitly labeled illustrative stock. Email and scheduled service activation require configuration and authorization. The cumulative Update 8 instructions below are retained for history.
 
-## Install step by step
+This cumulative update includes all earlier features: CSV exports, backup tooling, stock/audit viewers, full reorders, reservations, alerts, catalogs, account/line access, equipment filters and dialog fixes. It updates your existing local MachineCare pilot, rather than creating a separate app.
 
-1. Stop Flutter with `q` and stop the backend with Ctrl+C.
-2. Back up the complete project and `backend/machinecare.db` while stopped. Keep backup Dart files outside `app/lib`.
-3. Copy every included file from this package's `backend` and `app` folders into the matching folders under `F:\work\machinecare_flutter`, replacing matching files. Include the new `backend/records.py`, all other Python modules and all migrations. Keep your existing database, server.py, main.dart, api.dart, pubspec.yaml and login test.
-4. Run the checks:
+## Install
+
+1. Stop Flutter (`q`) and the backend (Ctrl+C).
+2. Back up your complete project and database while stopped. Keep backup Dart files outside app/lib.
+3. Copy every included `backend` and `app` file into the matching folders under `F:\work\machinecare_flutter`, replacing matching files. Keep your existing database, server.py, main.dart, api.dart, pubspec.yaml and login test. Include all Python modules, migration files and file_export Dart helpers.
+4. Run checks:
 
 ```powershell
 cd F:\work\machinecare_flutter
@@ -17,7 +19,7 @@ flutter analyze
 flutter test
 ```
 
-If C: is still short of temporary space, run this in the Flutter terminal first:
+If C: is short of temporary space, set these in the Flutter terminal first:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path F:\FlutterTemp
@@ -33,63 +35,69 @@ $env:MACHINECARE_ORIGIN = 'http://localhost:18080'
 python server.py run
 ```
 
-This update keeps schema version 5. Older databases upgrade automatically using included migrations. Existing stock, accounts, reservations, deliveries and history are retained. Upgrades from versions below 5 also apply the earlier Lead-request approval policy. Do not run init or seed and do not delete the database.
-
-6. Start Flutter in another terminal:
+6. Start Flutter in a separate terminal:
 
 ```powershell
 cd F:\work\machinecare_flutter\app
 flutter run -d chrome --web-hostname localhost --web-port 18080 --dart-define=API_URL=http://127.0.0.1:8000
 ```
 
-## Lead reorder permissions
+Schema is now version 7. Earlier schemas apply included migrations automatically. Existing accounts, stock, maintenance, orders, reservations and alerts remain. Do not run init/seed or delete the database. Assign other operational managers the Lead role; they do not need Administrator accounts for these new capabilities.
 
-| Action | Lead | Administrator | Technician |
+## Permission table
+
+| Capability | Administrator (you) | Lead | Technician |
 |---|---|---|---|
-| Request reorder | Immediately Approved | Requested, needs another manager's review | No |
-| Review another request | Yes | Yes | No |
-| Review own Requested order | No | No | No |
-| Record placed order/PO | Yes | Yes | No |
-| Record partial/final physical delivery | Yes | Yes | No |
-| Cancel any active remaining balance | Yes | Yes | No |
-| View all facility purchasing records | Yes | Yes | No |
+| Create/edit accounts, roles, assignments and access | Yes | No | No |
+| Reset other users' passwords; enable/disable accounts | Yes | No | No |
+| Change own password | Yes | Yes | Yes |
+| Create/edit building and line structure | Yes | No | No |
+| Register/edit/move/retire machines | All machines | Assigned machine access; both source/destination checked | No |
+| Add/rename machine types and edit shared parts | Yes | Yes | No |
+| Receive unlinked stock and adjust inventory | Yes | Yes | No |
+| Complete/cancel approved maintenance requests | Yes | Within assigned machine access, including others' requests | Own requests only |
+| Review pending early maintenance | Yes, excluding self-review | Within assigned machine access, excluding self-review | No |
+| Initiate early maintenance | Approved with required explanation recorded | Approved with required explanation recorded | Pending Lead review |
+| Manage entire reorder lifecycle | Yes | Yes | No |
+| Read/export audit and stock logs | Yes | Yes | No |
+| Maintenance history/export | All machines | Assigned machine access | Assigned machine access |
+| Read shared inventory/export | Yes | Yes | Yes |
+| Account and structural tools in Management | Visible | Hidden; server denies API attempts | Hidden; server denies API attempts |
 
-Lead requests require no separate approval. Administrator requests can now be reviewed by another Lead or Administrator. Lead/Administrator can act on orders submitted by other employees; purchasing is facility-wide. Machine building/line permissions still govern maintenance work.
+Building/line hierarchy is treated as system structure. Machine registration, equipment status, machine types, part compatibility, supplier/cost settings and stock rules are operational and available to Leads. Shared catalogs, inventory, purchasing and audit logs are facility-wide; machine work and maintenance history remain limited by assigned building/line access. A Lead can rename a shared type or part even when it is used by machines outside their scope. Give access to all nine buildings only if that Lead should manage all machines.
 
-The actual signed-in user's identity is recorded for ordering, review, receiving and cancellation. Reorder notifications now reach active Leads and Administrators. Closed Received/Rejected/Cancelled orders cannot be received or cancelled again. Duplicate reference, duplicate-operation, remaining-quantity and stale-revision checks remain enforced.
+## Operational changes
 
-Supplier orders and supplier cancellations still happen through your purchasing process. Mark ordered records a placed order; it does not send an order. Receive delivery records physical arrivals. For purchased orders, use Reorders -> Receive delivery, rather than the generic Inventory receipt action, to keep ordered balances correct. The generic receipt action and stock adjustments remain Administrator-only because they are separate inventory operations.
+- Management replaces the Administration navigation label. Leads see machine-type and equipment registry tools; you also see account and building/line sections.
+- Inventory shows Add part, Edit details, Receive and Adjust for Leads and Administrators. Reservation protection, required adjustment reasons, duplicate operation keys, catalog revisions and compatibility safeguards still apply.
+- Leads see all requests for accessible machines, even when the original technician reports to a different Lead. The assigned Lead still receives the early-request notification, but another authorized Lead may review within their scope.
+- Leads can complete or cancel another technician's request. Completion must represent physical work actually performed. Maintenance history, inventory ledger and audit actor use the signed-in completer. The request keeps the original requester ID, and the requester receives a notification when someone else completes/cancels it. Submitted identity fields cannot spoof the recorded person.
+- A Lead/Administrator initiating an early replacement must provide an explanation; the request is immediately Approved and records that manager as the confirming actor. A technician's early request remains Pending until reviewed. Pending work reserves nothing; Approved work reserves stock.
+- Completion still rechecks stock, status, compatibility and recent replacements. Duplicate completion remains blocked. Failed completion preserves its reservation until cancelled.
+- Leads can view/export the full recorded audit log, including read-only account-change records. Credential fields remain redacted. Viewing a log does not grant account-editing permission.
+- Full Lead reorder access remains: Lead requests approved immediately; ordering, partial/final delivery and cancellation allowed. Another Lead/Administrator reviews Administrator-submitted reorders. Supplier ordering/email remains manual.
 
-## Stock movements
+## Exports and backups
 
-Lead or Administrator -> Stock movements:
+Reports -> Download CSV exports maintenance, current inventory or reorder history. Stock movements and Audit log -> Export matching CSV export all matches, not merely loaded pages. Chrome downloads support UTF-8/Excel CSV, quoted text and formula-safe text cells. Row limit is 10,000; narrow filters if exceeded. Maintenance filters follow machine access; audit/stock/reorder exports are available to Leads/Administrators. Date filters use inclusive UTC dates; inventory is a current snapshot.
 
-- Inspect opening balances, purchased deliveries, unlinked receipts, adjustments and completed replacement deductions.
-- Each record shows the current part name/SKU, signed quantity, reason, authenticated actor, time and balance after the movement.
-- Balance after is calculated from the complete ledger for that SKU before filtering. An Out-only filter does not recalculate balances using only deductions.
-- Reservations change available quantities, not physical stock, so they appear in Inventory/Approvals rather than as movement rows.
-- Filters: search part/SKU/reason/actor, select a part, In/Out/All and inclusive UTC date range. Click Apply / refresh records. Timestamps display in the browser's local time; date filters use UTC dates.
-- Load more fetches older rows in descending ID order, 50 per page. New arrivals do not shift already loaded pages. Apply / refresh records returns to the newest page. Changing filters disables Load more until applied, preventing mixed result sets.
-- Names/SKUs and actor usernames shown beside historical records come from the current catalog/account. Movement quantity, reason and timestamp remain the recorded values.
-- Balance after represents recorded ledger movements. Direct database edits or pre-existing unrecorded changes can make it differ from physical stock; the viewer does not invent missing movements or repair inventory automatically.
+Backup remains local administrative tooling with no browser/API endpoint. Run from backend:
 
-## Audit log
+```powershell
+python backup.py create --db .\machinecare.db --out F:\MachineCareBackups
+python backup.py verify "F:\MachineCareBackups\YOUR_PRINTED_BACKUP_FILENAME.db"
+```
 
-Administrator -> Audit log:
+Read BACKUP_RECOVERY.md for a drill using a separate database. Backup sessions are cleared in the copy only. Backup files are not encrypted or uploaded. Protect access to backend/database/backup files through Windows permissions; app roles do not restrict a person who has direct filesystem access to the SQLite files.
 
-- Browse recorded account/scope changes, catalog edits, maintenance actions and purchasing actions.
-- Search action or actor; optionally enter an exact action such as `reorder_receive`, `edit_part`, `edit_user`, `complete` or `reorder_cancel`; filter inclusive UTC dates.
-- Expand a record to inspect its recorded detail, including before/after metadata where those actions already capture it.
-- Credential-related fields are recursively redacted before delivery to the client. Unstructured legacy details are withheld instead of displayed as arbitrary text.
-- This is a read-only viewer of existing audit records. It does not claim to log every event: login attempts, every password change, alert acknowledgement and background condition evaluations are not all captured by the existing audit writers. Database-local manual changes are not automatically audited. This pilot is not a tamper-proof audit system.
-- Leads and Technicians are denied audit browsing by the server, even if they call the API directly. Stock movement history is available to Leads/Administrators and is facility-wide.
+Alerts are evaluated on refresh/backend activity; no unattended scheduler or automated email is configured. The local HTTP pilot still binds loopback and is not a company-network deployment.
 
-## Actual verification
+## Verification
 
-96 backend tests passed in 71.853 seconds, including 14 new checks for Lead ordering/receiving/cancellation, role enforcement, concurrent deliveries, record filtering/pagination, balance calculations, redaction, restart persistence and a real HTTP flow. Python syntax compilation passed. See TEST_RESULTS.txt.
+Current laptop verification (2026-10-12): 123 backend tests passed; 33 Flutter widget tests passed after fixing the reorder status dropdown overflow; final Flutter analysis found no issues. Four record-browser tests also passed after a lint-only correction. Use F: temporary storage if C: is full. See PROJECT_STATUS.md for commands, details and remaining Chrome/download/recovery checks. The paragraph below is the original update author's historical result.
 
-Flutter is not installed in the delivery environment. Supplied widget tests and Flutter analysis are NOT executed here. Run them locally and follow VERIFY_SCENARIOS.md before relying on this version.
+123 backend tests passed in 61.487 seconds, including 12 new permission/identity/scope checks and a real HTTP flow. See TEST_RESULTS.txt. Python syntax compilation passed. Flutter is unavailable here, so supplied widget tests, Flutter analysis and actual Chrome downloads require local verification. Follow VERIFY_SCENARIOS.md.
 
 ## Rollback
 
-Stop both services and restore the complete previous code with its matching stopped-database backup. Restoring a backup loses changes recorded since it was taken. Never overwrite a live database or downgrade just the code.
+Stop both services and restore the complete previous code plus its matching stopped-database backup. Restoring a backup loses changes since that backup. Never overwrite a live database or downgrade only the code.
