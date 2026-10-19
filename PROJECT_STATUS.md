@@ -1,5 +1,26 @@
 # MachineCare project status
 
+## Current checkpoint: readability / UI refresh — 2026-10-19
+
+Visual refresh of the existing Flutter UI. There is no framework, API, permission or backend change.
+
+- `app/lib/design.dart`:
+  - Stronger type scale (15–16 px body) and a higher-contrast palette.
+  - Semantic status colours, always paired with an icon or word.
+  - Shared widgets: `StatusPill`, `Fact`/`FactGrid`, `Notice`, `EmptyState`, `SectionLabel`, `CountBadge`, `StockBar`.
+- `app/lib/workspace.dart`:
+  - Navigation is grouped (Daily work / Records & purchasing / Setup), with pending-approval and alert badges and a user card.
+  - Content width is capped at 1180 px.
+  - Overview cards are clickable and tinted by attention level, with stock bars.
+  - Inventory shows physical/reserved/available tiles, a stock bar, labelled facts, a low-stock filter and a highlighted demo/source reference.
+  - Approvals are grouped into Needs review / Ready to complete / Closed.
+  - Reorders show a received-progress bar and labelled facts. History uses labelled facts.
+  - Alerts show icons, the machine-details dialog uses readable part cards, and Reports sits in a card.
+- `app/lib/main.dart`: login errors are shown as a notice.
+- One test changed. `reservations_alerts_test.dart` now asserts the new physical/reserved/available tiles and the low-stock notice instead of the old single text line. All other test strings were preserved.
+- Actual checks: `flutter analyze` no issues; `flutter test` **45 passed**, including 390/768/1440 width layout checks for all roles. Two overflows found by those checks during the work (stock-attention row, alert dropdown) were fixed.
+- Visual check: release web build against a disposable demo database. Before/after captures are in `docs/ui-refresh-2026-10-19/`. Signed-in rehearsal on the laptop is still recommended. The installed database was not used.
+
 ## Current checkpoint: final manager deck with real screenshots — 2026-10-19
 
 Added `docs/manager-presentation-2026-10-19/final/`. It contains a 21-slide editable PPTX with speaker notes, a PDF fallback, 14 real app screenshots and `WALKTHROUGH.md`, which has the slide-by-slide script and the production gap list. Generator: `docs/build_final_deck.js`. This replaces the graphical deck's "Screenshot capture pending" placeholders. Earlier decks are left unchanged.

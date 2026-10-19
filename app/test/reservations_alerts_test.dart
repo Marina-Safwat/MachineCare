@@ -41,8 +41,12 @@ void main() {
   testWidgets('Inventory displays physical, reserved and available balances', (tester) async {
     await launch(tester, FakeApi());
     await tester.tap(find.text('Inventory')); await tester.pumpAndSettle();
-    expect(find.text('Physical stock: 12 • Reserved: 7 • Available: 5 • Bin: A1'), findsOneWidget);
-    expect(find.text('LOW STOCK • reorder planning required'), findsOneWidget);
+    for (final (label, value) in [('Physical', '12'), ('Reserved', '7'), ('Available', '5')]) {
+      expect(find.ancestor(of: find.text(value), matching: find.ancestor(of: find.text(label), matching: find.byType(Column))), findsWidgets, reason: label);
+    }
+    expect(find.text('A1'), findsOneWidget);
+    expect(find.text('Low stock'), findsOneWidget);
+    expect(find.textContaining('at or below the reorder threshold'), findsOneWidget);
   });
   testWidgets('Acknowledgement keeps active condition visible and filters resolved history', (tester) async {
     await launch(tester, FakeApi());

@@ -46,12 +46,12 @@ class _LoginPageState extends State<LoginPage> {
   @override Widget build(BuildContext context) => Scaffold(body: Center(child: SingleChildScrollView(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 460), child: Padding(padding: const EdgeInsets.all(24), child: Card(child: Padding(padding: const EdgeInsets.all(32), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
     const Icon(Icons.precision_manufacturing_outlined, size: 52, color: Color(0xff0c756c)), const SizedBox(height: 16),
     Text('MachineCare', textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineLarge),
-    const SizedBox(height: 8), const Text('Equipment. Inventory. Accountability.', textAlign: TextAlign.center), const SizedBox(height: 28),
-    const Text('LOCAL WORKSPACE', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, letterSpacing: 1.5)), const SizedBox(height: 20),
+    const SizedBox(height: 8), const Text('Equipment. Inventory. Accountability.', textAlign: TextAlign.center, style: TextStyle(color: Palette.muted, fontSize: 16)), const SizedBox(height: 28),
+    const Text('LOCAL WORKSPACE', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, letterSpacing: 1.5, fontWeight: FontWeight.w700, color: Palette.brand)), const SizedBox(height: 20),
     TextField(controller: username, autofocus: true, autofillHints: const [AutofillHints.username], textInputAction: TextInputAction.next, decoration: const InputDecoration(labelText: 'Username', prefixIcon: Icon(Icons.person_outline)), enabled: !busy), const SizedBox(height: 16),
     TextField(controller: password, obscureText: obscure, autofillHints: const [AutofillHints.password], decoration: InputDecoration(labelText: 'Password', prefixIcon: const Icon(Icons.lock_outline), suffixIcon: IconButton(tooltip: obscure ? 'Show password' : 'Hide password', onPressed: () => setState(() => obscure = !obscure), icon: Icon(obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined))), enabled: !busy, onSubmitted: (_) { if (!busy) login(); }), const SizedBox(height: 20),
-    if (error != null) Padding(padding: const EdgeInsets.only(bottom: 16), child: Text(error!, style: const TextStyle(color: Color(0xffb3261e)))),
+    if (error != null) Padding(padding: const EdgeInsets.only(bottom: 16), child: Notice(error!, tone: error!.startsWith('Password changed') ? Tone.ok : Tone.danger)),
     FilledButton(onPressed: busy ? null : login, child: Padding(padding: const EdgeInsets.all(14), child: Text(busy ? 'Signing in…' : 'Sign in'))),
-    const SizedBox(height: 18), const Text('Accounts are provided by your administrator.\nNo public registration.', textAlign: TextAlign.center),
+    const SizedBox(height: 18), const Text('Accounts are provided by your administrator.\nNo public registration.', textAlign: TextAlign.center, style: TextStyle(color: Palette.muted)),
   ]))))))));
 }

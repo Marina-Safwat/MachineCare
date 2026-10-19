@@ -104,29 +104,68 @@ class _WorkspaceState extends State<Workspace> {
     if (!mounted) return;
     await refresh();
   }
-  Widget panel(String title, List<Widget> children, {Widget? trailing}) => Card(child: Padding(padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 16 : 22), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [Expanded(child: Text(title, style: Theme.of(context).textTheme.titleLarge)), if (trailing != null) trailing]), const SizedBox(height: 14), ...children])));
-  Widget pill(String text) {
-    final positive = ['Approved', 'Completed', 'Received', 'Operating'].contains(text);
-    final warning = ['Pending', 'Early replacement', 'Partially received', 'Maintenance'].contains(text);
-    return Chip(label: Text(text), backgroundColor: positive ? const Color(0xffd6f1e7) : warning ? const Color(0xffffedc5) : const Color(0xffe8edf1), labelStyle: const TextStyle(color: Color(0xff253641), fontWeight: FontWeight.w600), side: BorderSide.none, visualDensity: VisualDensity.compact);
-  }
+  bool get compact => MediaQuery.sizeOf(context).width < 600;
+  double get factWidth => compact ? 140 : 190;
+  Widget labelled(String label, String value) => Text.rich(TextSpan(children: [TextSpan(text: '$label: ', style: const TextStyle(fontWeight: FontWeight.w700)), TextSpan(text: value)]));
+  Widget panel(String title, List<Widget> children, {Widget? trailing, String? subtitle}) => Card(child: Padding(padding: EdgeInsets.all(compact ? 16 : 22), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: Theme.of(context).textTheme.titleLarge), if (subtitle != null) Padding(padding: const EdgeInsets.only(top: 4), child: Text(subtitle, style: const TextStyle(color: Palette.muted)))])), if (trailing != null) ...[const SizedBox(width: 12), trailing]]), const SizedBox(height: 14), ...children])));
+  Widget pill(String text) => StatusPill(text);
   Widget overview() {
     final machines = rows(state, 'machines'), parts = rows(state, 'parts'), requests = rows(state, 'requests'), history = rows(state, 'history');
     final low = parts.where((p) => (p['available_quantity'] ?? p['stock']) <= p['threshold']).toList();
     final pending = requests.where((r) => r['state'] == 'Pending').length;
+    final ready = requests.where((r) => r['state'] == 'Approved').length;
+    final alerts = rows(state, 'alerts').where((a) => a['resolved'] == null).length;
     final spend = history.fold<double>(0, (sum, h) => sum + (h['quantity'] as num) * (h['unit_cost'] as num));
     int overdue = 0;
     for (final m in machines) { for (final p in (m['parts'] as List)) { if (p['last_replacement'] != null && DateTime.now().difference(DateTime.parse(p['last_replacement'] as String)).inDays >= (p['interval_days'] as int)) overdue++; } }
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('Keep production moving.', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700)), const SizedBox(height: 8), const Text('One place for equipment, replacement decisions, and shared spare parts.'), const SizedBox(height: 22),
-      Wrap(spacing: 12, runSpacing: 12, children: [metric('Machines', '${machines.length}', Icons.precision_manufacturing), metric('Low-stock SKUs', '${low.length}', Icons.inventory), metric('Pending approvals', '$pending', Icons.approval), metric('Recorded spending', '\$${spend.toStringAsFixed(2)}', Icons.payments), metric('Active alerts', '${rows(state, 'alerts').where((a) => a['resolved'] == null).length}', Icons.notifications_active_outlined), if (purchasingAllowed) metric('Outstanding reorders', '${rows(state, 'reorders').where((r) => ['Approved', 'Ordered', 'Partially received'].contains(r['state'])).length}', Icons.shopping_cart_outlined)]),
-      const SizedBox(height: 18), panel('Production status', [Wrap(spacing: 12, children: ['Operating', 'Maintenance', 'Stopped', 'Retired'].map((s) => pill('$s: ${machines.where((m) => m['status'] == s).length}')).toList()), Text('$overdue machine/part intervals overdue. No history means due date unknown.')]),
-      panel('Stock needs attention', low.isEmpty ? [const Text('No low-stock parts.')] : low.map((p) => ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.warning_amber, color: Colors.orange), title: Text(p['name'] as String), subtitle: Text('${p['sku']} • ${p['bin']}'), trailing: Text('${p['available_quantity'] ?? p['stock']} available / ${p['threshold']} threshold'))).toList()),
-      panel('Recent replacements', history.take(5).map((h) => ListTile(contentPadding: EdgeInsets.zero, title: Text('${h['part']} • ${h['location_snapshot']}'), subtitle: Text('${date(h['replaced'])} • ${h['technician']} • Qty ${h['quantity']}'))).toList().isEmpty ? [const Text('No completed replacements yet.')] : history.take(5).map((h) => ListTile(contentPadding: EdgeInsets.zero, title: Text('${h['part']} • ${h['location_snapshot']}'), subtitle: Text('${date(h['replaced'])} • ${h['technician']} • Qty ${h['quantity']}'))).toList()),
-      const Padding(padding: EdgeInsets.all(12), child: Text('Pilot: in-app notifications available. Email requires administrator setup. Supplier ordering remains a manual step.')),
+    final open = rows(state, 'reorders').where((r) => ['Approved', 'Ordered', 'Partially received'].contains(r['state'])).length;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Text('Keep production moving.', style: Theme.of(context).textTheme.headlineMedium), const SizedBox(height: 6),
+      const Text('One place for equipment, replacement decisions, and shared spare parts. Start with anything highlighted.', style: TextStyle(color: Palette.muted, fontSize: 16)), const SizedBox(height: 22),
+      Wrap(spacing: 14, runSpacing: 14, children: [
+        metric('Machines', '${machines.length}', Icons.precision_manufacturing_outlined, note: '${machines.where((m) => m['status'] == 'Operating').length} operating', onTap: () => setState(() => page = 1)),
+        metric('Low-stock SKUs', '${low.length}', Icons.inventory_2_outlined, tone: low.isEmpty ? Tone.ok : Tone.warn, note: low.isEmpty ? 'All above threshold' : 'Plan reorders', onTap: () => setState(() { page = 2; lowOnly = low.isNotEmpty; })),
+        metric('Pending approvals', '$pending', Icons.fact_check_outlined, tone: pending > 0 ? Tone.warn : Tone.ok, note: pending > 0 ? 'Waiting for a lead' : '$ready ready to complete', onTap: () => setState(() => page = 3)),
+        metric('Active alerts', '$alerts', Icons.notifications_active_outlined, tone: alerts > 0 ? Tone.danger : Tone.ok, note: alerts > 0 ? 'Open conditions' : 'All clear', onTap: () => setState(() => page = 6)),
+        if (purchasingAllowed) metric('Outstanding reorders', '$open', Icons.local_shipping_outlined, note: 'Approved or on order', onTap: () => setState(() => page = 7)),
+        metric('Recorded spending', '\$${spend.toStringAsFixed(2)}', Icons.payments_outlined, note: 'From completed work'),
+      ]),
+      const SizedBox(height: 22),
+      panel('Production status', [
+        Wrap(spacing: 10, runSpacing: 10, children: ['Operating', 'Maintenance', 'Stopped', 'Retired'].map((s) => StatusPill('$s: ${machines.where((m) => m['status'] == s).length}', tone: toneFor(s))).toList()),
+        const SizedBox(height: 14),
+        overdue > 0 ? Notice('$overdue machine/part intervals overdue. No history means due date unknown.', tone: Tone.warn) : const Text('0 machine/part intervals overdue. No history means due date unknown.', style: TextStyle(color: Palette.muted)),
+      ]),
+      panel('Stock needs attention', [
+        if (low.isEmpty) const EmptyState('No low-stock parts.', icon: Icons.check_circle_outline),
+        for (final p in low) Padding(padding: const EdgeInsets.only(bottom: 16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Padding(padding: EdgeInsets.only(top: 2, right: 10), child: Icon(Icons.warning_amber_rounded, color: Palette.warnFg)),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(p['name'] as String, style: Theme.of(context).textTheme.titleSmall), Text('${p['sku']} • ${p['bin']}', style: Theme.of(context).textTheme.bodySmall), Text('${p['available_quantity'] ?? p['stock']} available / ${p['threshold']} threshold', style: const TextStyle(fontWeight: FontWeight.w700, color: Palette.warnFg))])),
+          ]),
+          const SizedBox(height: 8),
+          StockBar(available: (p['available_quantity'] ?? p['stock']) as num, threshold: p['threshold'] as num, target: p['target'] as num),
+        ])),
+      ]),
+      panel('Recent replacements', [
+        if (history.isEmpty) const EmptyState('No completed replacements yet.', icon: Icons.history),
+        for (final h in history.take(5)) ListTile(contentPadding: EdgeInsets.zero, leading: const CircleAvatar(radius: 18, backgroundColor: Palette.brandSoft, child: Icon(Icons.build_outlined, size: 18, color: Palette.brand)), title: Text('${h['part']} • ${h['location_snapshot']}', style: const TextStyle(fontWeight: FontWeight.w600)), subtitle: Text('${date(h['replaced'])} • ${h['technician']} • Qty ${h['quantity']}')),
+      ]),
+      const Notice('Pilot: in-app notifications available. Email requires administrator setup. Supplier ordering remains a manual step.', tone: Tone.neutral),
     ]);
   }
-  Widget metric(String label, String value, IconData icon) => SizedBox(width: 230, child: Card(child: Padding(padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 16 : 22), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Icon(icon, color: const Color(0xff0c756c)), const SizedBox(height: 18), Text(value, style: const TextStyle(fontSize: 30, fontWeight: FontWeight.bold)), Text(label)]))));
+  Widget metric(String label, String value, IconData icon, {Tone tone = Tone.neutral, String? note, VoidCallback? onTap}) {
+    final s = toneStyle(tone);
+    final accent = tone == Tone.neutral ? Palette.brand : s.fg;
+    final width = compact ? (MediaQuery.sizeOf(context).width - 24 - 14) / 2 - 1 : 224.0;
+    return SizedBox(width: width, child: Card(margin: EdgeInsets.zero, clipBehavior: Clip.antiAlias, child: InkWell(onTap: onTap, child: Padding(padding: EdgeInsets.all(compact ? 14 : 20), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: tone == Tone.neutral ? Palette.brandSoft : s.bg, borderRadius: BorderRadius.circular(10)), child: Icon(icon, color: accent, size: 22)),
+      const SizedBox(height: 14),
+      FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft, child: Text(value, style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w800, color: Palette.ink))),
+      Text(label, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+      if (note != null) Padding(padding: const EdgeInsets.only(top: 4), child: Text(note, style: TextStyle(fontSize: 13, color: tone == Tone.neutral ? Palette.muted : s.fg, fontWeight: FontWeight.w600))),
+    ])))));
+  }
   Widget equipmentFilter(String label, String? value, Map<String, String> options, void Function(String?) changed) => SizedBox(
     width: 210,
     child: DropdownButtonFormField<String>(
@@ -171,11 +210,11 @@ class _WorkspaceState extends State<Workspace> {
           TextButton.icon(onPressed: active ? () => setState(() { filterBuilding = null; filterLine = null; filterType = null; filterStation = null; filterStatus = null; search = ''; equipmentSearch.clear(); }) : null, icon: const Icon(Icons.filter_alt_off_outlined), label: const Text('Clear filters')),
         ]),
       ]),
-      if (ms.isEmpty) const Padding(padding: EdgeInsets.all(28), child: Text('No machines match these filters. Clear filters or choose another location.', textAlign: TextAlign.center)),
-      for (final b in buildings.where((b) => ms.any((m) => m['building_id'] == b['id']))) Card(child: ExpansionTile(key: ValueKey('building:${b['id']}:$active'), title: Text('${b['code']} · ${b['name']}'), initiallyExpanded: true, children: [
-        for (final l in lines.where((l) => l['building_id'] == b['id'] && ms.any((m) => m['line_id'] == l['id']))) ExpansionTile(key: ValueKey('line:${l['id']}:$active'), title: Text(l['code'] as String), initiallyExpanded: active, children: [
+      if (ms.isEmpty) const EmptyState('No machines match these filters. Clear filters or choose another location.', icon: Icons.search_off),
+      for (final b in buildings.where((b) => ms.any((m) => m['building_id'] == b['id']))) Card(child: ExpansionTile(key: ValueKey('building:${b['id']}:$active'), leading: const Icon(Icons.apartment_outlined, color: Palette.brand), title: Text('${b['code']} · ${b['name']}', style: Theme.of(context).textTheme.titleMedium), initiallyExpanded: true, children: [
+        for (final l in lines.where((l) => l['building_id'] == b['id'] && ms.any((m) => m['line_id'] == l['id']))) ExpansionTile(key: ValueKey('line:${l['id']}:$active'), leading: const Icon(Icons.account_tree_outlined), title: Text('Line ${l['code']}', style: const TextStyle(fontWeight: FontWeight.w600)), subtitle: Text('${ms.where((m) => m['line_id'] == l['id']).length} machines'), initiallyExpanded: active, children: [
           for (final t in types.where((t) => ms.any((m) => m['line_id'] == l['id'] && m['type_id'] == t['id']))) ExpansionTile(title: Text(t['name'] as String), initiallyExpanded: true, children: [
-            for (final m in ms.where((m) => m['line_id'] == l['id'] && m['type_id'] == t['id'])) ListTile(title: Text(m['name'] as String), subtitle: Text('Asset ${m['asset_tag']}'), trailing: pill(m['status'] as String), onTap: () => machineDetails(m)),
+            for (final m in ms.where((m) => m['line_id'] == l['id'] && m['type_id'] == t['id'])) ListTile(leading: const Icon(Icons.precision_manufacturing_outlined), title: Text(m['name'] as String, style: const TextStyle(fontWeight: FontWeight.w600)), subtitle: Text('Asset ${m['asset_tag']}'), trailing: pill(m['status'] as String), onTap: () => machineDetails(m)),
           ]),
         ]),
       ])),
@@ -183,12 +222,18 @@ class _WorkspaceState extends State<Workspace> {
   }
   Future<void> machineDetails(Map<String, dynamic> m) async {
     final route = DialogRoute<Map<String, dynamic>>(context: context, builder: (ctx) => AlertDialog(title: Text(m['name'] as String), content: SizedBox(width: 680, child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Asset: ${m['asset_tag']} • Serial: ${m['serial']} • ${m['status']}'), const SizedBox(height: 18), const Text('Compatible parts • shared inventory', style: TextStyle(fontWeight: FontWeight.bold)),
-      for (final p in (m['parts'] as List)) Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('${p['name']} · ${p['sku']}', style: const TextStyle(fontWeight: FontWeight.bold)), Text('Last replacement: ${date(p['last_replacement'])}'), Text('${p['available_quantity'] ?? p['stock']} available • ${p['reserved_quantity'] ?? 0} reserved • ${p['bin']} • expected ${p['interval_days']} days'), Align(alignment: Alignment.centerRight, child: FilledButton.tonal(onPressed: m['status'] == 'Retired' ? null : () => Navigator.pop(ctx, Map<String, dynamic>.from(p as Map)), child: const Text('Replace this part')))]))),
-      const SizedBox(height: 18), const Text('Requests', style: TextStyle(fontWeight: FontWeight.bold)),
-      for (final r in rows(state, 'requests').where((r) => r['machine_id'] == m['id'])) Text('#${r['id']} ${r['part']} • ${r['state']}'),
-      const SizedBox(height: 18), const Text('Maintenance history', style: TextStyle(fontWeight: FontWeight.bold)),
-      for (final h in rows(state, 'history').where((h) => h['machine_id'] == m['id'])) Text('${date(h['replaced'])} • ${h['part']} • ${h['technician']}'),
+      Wrap(spacing: 8, runSpacing: 8, children: [pill(m['status'] as String), StatusPill('Asset ${m['asset_tag']}', tone: Tone.neutral, icon: Icons.sell_outlined), if ('${m['serial'] ?? ''}'.isNotEmpty) StatusPill('Serial ${m['serial']}', tone: Tone.neutral, icon: Icons.tag)]),
+      const SectionLabel('Compatible parts · shared inventory'),
+      for (final p in (m['parts'] as List)) Card(margin: const EdgeInsets.only(bottom: 10), child: Padding(padding: const EdgeInsets.all(14), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('${p['name']} · ${p['sku']}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)), const SizedBox(height: 10),
+        FactGrid([Fact('Available', '${p['available_quantity'] ?? p['stock']}', width: 110), Fact('Reserved', '${p['reserved_quantity'] ?? 0}', width: 110), Fact('Bin', '${p['bin']}', width: 150), Fact('Last replacement', date(p['last_replacement']), width: 150), Fact('Expected life', '${p['interval_days']} days', width: 130)]),
+        Align(alignment: Alignment.centerRight, child: FilledButton.tonalIcon(onPressed: m['status'] == 'Retired' ? null : () => Navigator.pop(ctx, Map<String, dynamic>.from(p as Map)), icon: const Icon(Icons.build_outlined), label: const Text('Replace this part')))]))),
+      const SectionLabel('Requests'),
+      if (!rows(state, 'requests').any((r) => r['machine_id'] == m['id'])) const Text('No requests for this machine.', style: TextStyle(color: Palette.muted)),
+      for (final r in rows(state, 'requests').where((r) => r['machine_id'] == m['id'])) Padding(padding: const EdgeInsets.only(bottom: 6), child: Wrap(spacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [Text('#${r['id']} ${r['part']}', style: const TextStyle(fontWeight: FontWeight.w600)), pill(r['state'] as String)])),
+      const SectionLabel('Maintenance history'),
+      if (!rows(state, 'history').any((h) => h['machine_id'] == m['id'])) const Text('No completed work recorded.', style: TextStyle(color: Palette.muted)),
+      for (final h in rows(state, 'history').where((h) => h['machine_id'] == m['id'])) Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('${date(h['replaced'])} • ${h['part']} • ${h['technician']}')),
     ]))), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))]));
     final selectedPart = await Navigator.of(context).push(route);
     await route.completed;
@@ -202,13 +247,71 @@ class _WorkspaceState extends State<Workspace> {
     await form(early ? (purchasingAllowed ? 'Early replacement · manager confirmation' : 'Early replacement • lead approval required') : 'Request replacement', 'request', [ ['quantity', 'Quantity', 'int', '1'], ['reason', 'Reason'], ['notes', 'Notes', 'optional'], if (early) ['early_explanation', 'Required early replacement explanation'] ], extra: {'machine_id': m['id'], 'part_id': p['id'], 'operation_key': 'request:${DateTime.now().microsecondsSinceEpoch}:${state['user']['id']}'}, intro: '${m['name']}\n${p['name']} • ${p['available_quantity'] ?? p['stock']} available (${p['reserved_quantity'] ?? 0} reserved) at ${p['bin']}\nPrevious: ${date(last)} • expected ${p['interval_days']} days\n${early ? 'WARNING: only $elapsed days elapsed. ${purchasingAllowed ? 'Manager request is approved with the required explanation.' : 'A Lead must approve before completion.'}' : 'No early replacement detected.'}\nApproved work reserves stock without deducting physical inventory. Pending early work reserves nothing until approved. Record completion after physical work.');
   }
   String inventorySearch = '';
-  Widget inventory() => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-    TextField(decoration: const InputDecoration(labelText: 'Search parts, SKU, supplier or bin', prefixIcon: Icon(Icons.search)), onChanged: (v) => setState(() => inventorySearch = v.toLowerCase())),
-    const SizedBox(height: 16),
-    if (rows(state, 'parts').isEmpty) const Text('No parts have been added yet.'),
-    if (purchasingAllowed) Align(alignment: Alignment.centerRight, child: FilledButton.icon(onPressed: addPart, icon: const Icon(Icons.add), label: const Text('Add part'))),
-    for (final p in rows(state, 'parts').where((p) => '${p['name']} ${p['sku']} ${p['supplier']} ${p['bin']} ${p['provenance'] ?? ''}'.toLowerCase().contains(inventorySearch))) panel('${p['name']} · ${p['sku']}', [if (p['provenance'] != null) ...[pill('Demo stock / planning values'), Text('Manufacturer: ${p['provenance']['manufacturer'] ?? 'Unknown'}'), Text('Part number: ${p['provenance']['manufacturer_part_number'] ?? 'Not supplied'}'), if (p['provenance']['reference_serial'] != null) Text('Supplied serial reference: ${p['provenance']['reference_serial']} (not a part number)'), Text('Used per machine: ${p['provenance']['quantity_per_machine']} | ${p['provenance']['machine_family']}'), Text(p['provenance']['demo_notice'] as String)], Text('Physical stock: ${p['stock']} • Reserved: ${p['reserved_quantity'] ?? 0} • Available: ${p['available_quantity'] ?? p['stock']} • Bin: ${p['bin']}'), Text('Threshold ${p['threshold']} • Target ${p['target']} • Expected life ${p['interval_days']} days'), Text('Unit cost \$${(p['cost'] as num).toStringAsFixed(2)} • Supplier: ${p['supplier']}'), Text('Suggested order: ${p['suggested_order_quantity'] ?? 0} • Approved/ordered outstanding: ${p['outstanding_order_quantity'] ?? 0} • Pending requests: ${p['pending_reorder_quantity'] ?? 0}'), if ((p['reservation_shortfall'] ?? 0) > 0) Text('RESERVATION SHORTFALL: ${p['reservation_shortfall']} units. Receive stock or cancel approved work.', style: const TextStyle(color: Color(0xffb3261e))), if (purchasingAllowed) TextButton.icon(onPressed: () => requestReorder(p), icon: const Icon(Icons.add_shopping_cart), label: const Text('Request reorder')), if ((p['available_quantity'] ?? p['stock']) <= p['threshold']) const Text('LOW STOCK • reorder planning required', style: TextStyle(color: Color(0xff9b3d00))), if (purchasingAllowed) Wrap(spacing: 10, children: [TextButton.icon(onPressed: () => editPart(p), icon: const Icon(Icons.edit_outlined), label: const Text('Edit details')), TextButton(onPressed: () => form('Receive stock', 'receipt', [['quantity', 'Received quantity', 'int'], ['reason', 'Receipt reference / reason']], extra: {'part_id': p['id'], 'operation_key': 'receipt:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Receive')), TextButton(onPressed: () => form('Adjust inventory', 'adjust', [['delta', 'Signed adjustment (+ / −)', 'int'], ['reason', 'Required adjustment reason']], extra: {'part_id': p['id'], 'operation_key': 'adjust:${DateTime.now().microsecondsSinceEpoch}'}), child: const Text('Adjust'))])]),
-  ]);
+  bool lowOnly = false;
+  Widget inventory() {
+    final all = rows(state, 'parts');
+    bool isLow(Map<String, dynamic> p) => (p['available_quantity'] ?? p['stock']) <= p['threshold'];
+    final visible = all.where((p) => (!lowOnly || isLow(p)) && '${p['name']} ${p['sku']} ${p['supplier']} ${p['bin']} ${p['provenance'] ?? ''}'.toLowerCase().contains(inventorySearch)).toList();
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Row(children: [
+        Expanded(child: TextField(decoration: const InputDecoration(labelText: 'Search parts, SKU, supplier or bin', prefixIcon: Icon(Icons.search)), onChanged: (v) => setState(() => inventorySearch = v.toLowerCase()))),
+        if (purchasingAllowed) ...[const SizedBox(width: 12), FilledButton.icon(onPressed: addPart, icon: const Icon(Icons.add), label: const Text('Add part'))],
+      ]),
+      const SizedBox(height: 12),
+      Wrap(spacing: 12, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+        FilterChip(label: Text('Low stock only (${all.where(isLow).length})'), selected: lowOnly, onSelected: (v) => setState(() => lowOnly = v)),
+        Text('Showing ${visible.length} of ${all.length} parts', style: const TextStyle(color: Palette.muted, fontWeight: FontWeight.w600)),
+      ]),
+      const SizedBox(height: 16),
+      if (all.isEmpty) const EmptyState('No parts have been added yet.', icon: Icons.inventory_2_outlined) else if (visible.isEmpty) const EmptyState('No parts match this search.', icon: Icons.search_off),
+      for (final p in visible) partCard(p),
+    ]);
+  }
+  Widget stockStat(String label, Object value, {Tone? tone}) => Container(
+    width: compact ? 96 : 118, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    decoration: BoxDecoration(color: tone == null ? Palette.subtle : toneStyle(tone).bg, borderRadius: BorderRadius.circular(10), border: Border.all(color: tone == null ? Palette.border : Colors.transparent)),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: tone == null ? Palette.muted : toneStyle(tone).fg)), Text('$value', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: tone == null ? Palette.ink : toneStyle(tone).fg))]),
+  );
+  Widget partCard(Map<String, dynamic> p) {
+    final available = (p['available_quantity'] ?? p['stock']) as num;
+    final low = available <= (p['threshold'] as num);
+    final provenance = p['provenance'] as Map?;
+    return panel(p['name'] as String, [
+      Wrap(spacing: 8, runSpacing: 8, children: [StatusPill(p['sku'] as String, tone: Tone.neutral, icon: Icons.qr_code_2), if (low) const StatusPill('Low stock', tone: Tone.warn, icon: Icons.warning_amber_rounded), if (provenance != null) pill('Demo stock / planning values')]),
+      const SizedBox(height: 16),
+      Wrap(spacing: 10, runSpacing: 10, children: [stockStat('Physical', p['stock']), stockStat('Reserved', p['reserved_quantity'] ?? 0), stockStat('Available', available, tone: available <= 0 ? Tone.danger : low ? Tone.warn : Tone.ok)]),
+      const SizedBox(height: 12),
+      StockBar(available: available, threshold: p['threshold'] as num, target: p['target'] as num),
+      const SizedBox(height: 6),
+      Text('Reorder at ${p['threshold']} · target ${p['target']} · bar marks the reorder level', style: Theme.of(context).textTheme.bodySmall),
+      if (low) const Padding(padding: EdgeInsets.only(top: 12), child: Notice('Low stock: available is at or below the reorder threshold. Plan a reorder.', tone: Tone.warn, icon: Icons.warning_amber_rounded)),
+      if ((p['reservation_shortfall'] ?? 0) > 0) Padding(padding: const EdgeInsets.only(top: 12), child: Notice('Reservation shortfall: ${p['reservation_shortfall']} units. Receive stock or cancel approved work.', tone: Tone.danger)),
+      const SizedBox(height: 16),
+      FactGrid([
+        Fact('Bin', '${p['bin']}', width: factWidth), Fact('Unit cost', '\$${(p['cost'] as num).toStringAsFixed(2)}', width: factWidth),
+        Fact('Supplier', '${p['supplier'] ?? ''}'.isEmpty ? 'Not provided' : '${p['supplier']}', width: factWidth), Fact('Expected life', '${p['interval_days']} days', width: factWidth),
+        Fact('Suggested order', '${p['suggested_order_quantity'] ?? 0}', width: factWidth), Fact('On order', '${p['outstanding_order_quantity'] ?? 0}', width: factWidth), Fact('Pending requests', '${p['pending_reorder_quantity'] ?? 0}', width: factWidth),
+      ]),
+      if (provenance != null) Container(margin: const EdgeInsets.only(top: 16), padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: Palette.subtle, borderRadius: BorderRadius.circular(10), border: Border.all(color: Palette.border)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Supplied reference', style: TextStyle(fontWeight: FontWeight.w700)), const SizedBox(height: 6),
+        Text('Manufacturer: ${provenance['manufacturer'] ?? 'Unknown'}'),
+        Text('Part number: ${provenance['manufacturer_part_number'] ?? 'Not supplied'}'),
+        if (provenance['reference_serial'] != null) Text('Supplied serial reference: ${provenance['reference_serial']} (not a part number)'),
+        Text('Used per machine: ${provenance['quantity_per_machine']} | ${provenance['machine_family']}'),
+        const SizedBox(height: 8),
+        Text(provenance['demo_notice'] as String, style: Theme.of(context).textTheme.bodySmall),
+      ])),
+      if (purchasingAllowed) ...[
+        const Divider(height: 28),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          FilledButton.tonalIcon(onPressed: () => requestReorder(p), icon: const Icon(Icons.add_shopping_cart), label: const Text('Request reorder')),
+          TextButton.icon(onPressed: () => editPart(p), icon: const Icon(Icons.edit_outlined), label: const Text('Edit details')),
+          TextButton.icon(onPressed: () => form('Receive stock', 'receipt', [['quantity', 'Received quantity', 'int'], ['reason', 'Receipt reference / reason']], extra: {'part_id': p['id'], 'operation_key': 'receipt:${DateTime.now().microsecondsSinceEpoch}'}), icon: const Icon(Icons.move_to_inbox_outlined), label: const Text('Receive')),
+          TextButton.icon(onPressed: () => form('Adjust inventory', 'adjust', [['delta', 'Signed adjustment (+ / −)', 'int'], ['reason', 'Required adjustment reason']], extra: {'part_id': p['id'], 'operation_key': 'adjust:${DateTime.now().microsecondsSinceEpoch}'}), icon: const Icon(Icons.tune), label: const Text('Adjust')),
+        ]),
+      ],
+    ]);
+  }
   Future<void> addPart() => editPart(null);
   Future<void> editPart(Map<String, dynamic>? part) async {
     final types = rows(state, 'types');
@@ -223,13 +326,49 @@ class _WorkspaceState extends State<Workspace> {
     if (!mounted) return;
     await refresh();
   }
-  Widget approvals() => Column(children: [if (rows(state, 'requests').isEmpty) const Text('No replacement requests.'), for (final r in rows(state, 'requests')) panel('#${r['id']} · ${r['part']}', [Wrap(spacing: 8, children: [pill(r['state'] as String), if (r['early'] == 1) pill('Early replacement')]), Text('${rows(state, 'machines').where((m) => m['id'] == r['machine_id']).map((m) => m['name']).firstOrNull ?? 'Machine #${r['machine_id']}'} • Qty ${r['quantity']} • ${r['technician']}'), if (r['state'] == 'Approved') Text('${r['quantity']} units reserved for this work.'), if (r['state'] == 'Pending') const Text('No stock reserved until approval.'), Text(r['reason'] as String), Text(r['notes'] as String), if (r['review_comment'] != null) Text('Lead comment: ${r['review_comment']}'), Wrap(spacing: 10, children: [if (r['state'] == 'Pending' && purchasingAllowed && r['technician_id'] != state['user']['id']) ...[FilledButton(onPressed: () => review(r, 'Approved'), child: const Text('Approve')), OutlinedButton(onPressed: () => review(r, 'Rejected'), child: const Text('Reject'))], if (r['state'] == 'Approved' && (purchasingAllowed || r['technician_id'] == state['user']['id'])) FilledButton(onPressed: () => confirmComplete(r), child: const Text('Record physical completion')), if (['Pending', 'Approved'].contains(r['state']) && (purchasingAllowed || r['technician_id'] == state['user']['id'])) TextButton(onPressed: () => act('cancel', {'request_id': r['id']}), child: const Text('Cancel request'))])])]);
+  Widget approvals() {
+    final all = rows(state, 'requests');
+    if (all.isEmpty) return const EmptyState('No replacement requests yet. Open a machine in Equipment to request a part.', icon: Icons.fact_check_outlined);
+    final groups = [('Needs review', all.where((r) => r['state'] == 'Pending').toList()), ('Ready to complete', all.where((r) => r['state'] == 'Approved').toList()), ('Closed', all.where((r) => !['Pending', 'Approved'].contains(r['state'])).toList())];
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      for (final (label, items) in groups) if (items.isNotEmpty) ...[SectionLabel(label, count: items.length), for (final r in items) requestCard(r)],
+    ]);
+  }
+  Widget requestCard(Map<String, dynamic> r) {
+    final machine = rows(state, 'machines').where((m) => m['id'] == r['machine_id']).map((m) => m['name']).firstOrNull ?? 'Machine #${r['machine_id']}';
+    final mine = r['technician_id'] == state['user']['id'];
+    return panel('#${r['id']} · ${r['part']}', [
+      Wrap(spacing: 8, runSpacing: 8, children: [pill(r['state'] as String), if (r['early'] == 1) pill('Early replacement')]),
+      const SizedBox(height: 14),
+      FactGrid([Fact('Machine', '$machine', width: compact ? 300 : 380), Fact('Quantity', '${r['quantity']}', width: 110), Fact('Requested by', '${r['technician']}', width: factWidth)]),
+      const SizedBox(height: 12),
+      labelled('Reason', r['reason'] as String),
+      if ('${r['notes'] ?? ''}'.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: r['early'] == 1 ? Notice('${r['notes']}', tone: Tone.info, icon: Icons.chat_bubble_outline) : labelled('Notes', '${r['notes']}')),
+      if (r['review_comment'] != null) Padding(padding: const EdgeInsets.only(top: 4), child: labelled('Lead comment', '${r['review_comment']}')),
+      const SizedBox(height: 12),
+      if (r['state'] == 'Approved') Notice('${r['quantity']} units reserved for this work.', tone: Tone.ok, icon: Icons.inventory_2_outlined),
+      if (r['state'] == 'Pending') const Notice('No stock reserved until approval.', tone: Tone.warn),
+      if (['Pending', 'Approved'].contains(r['state'])) const SizedBox(height: 14),
+      Wrap(spacing: 10, runSpacing: 8, children: [if (r['state'] == 'Pending' && purchasingAllowed && !mine) ...[FilledButton.icon(onPressed: () => review(r, 'Approved'), icon: const Icon(Icons.check), label: const Text('Approve')), OutlinedButton(onPressed: () => review(r, 'Rejected'), child: const Text('Reject'))], if (r['state'] == 'Approved' && (purchasingAllowed || mine)) FilledButton.icon(onPressed: () => confirmComplete(r), icon: const Icon(Icons.task_alt), label: const Text('Record physical completion')), if (['Pending', 'Approved'].contains(r['state']) && (purchasingAllowed || mine)) TextButton(onPressed: () => act('cancel', {'request_id': r['id']}), child: const Text('Cancel request'))]),
+    ]);
+  }
   Future<void> review(Map<String, dynamic> r, String decision) => form('$decision request #${r['id']}', 'review', [['comment', 'Lead review comment']], extra: {'request_id': r['id'], 'decision': decision});
   Future<void> confirmComplete(Map<String, dynamic> r) async {
     final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(title: const Text('Confirm physical replacement'), content: Text('Has quantity ${r['quantity']} of ${r['part']} actually been replaced? This records maintenance and deducts shared stock.'), actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Back')), FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes, record completion'))]));
     if (yes == true) await act('complete', {'request_id': r['id']});
   }
-  Widget history() => Column(children: [const Text('Completed work only • historical location and cost preserved'), if (rows(state, 'history').isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('No completed maintenance recorded.')), for (final h in rows(state, 'history')) panel(h['part'] as String, [Text(h['location_snapshot'] as String), Text('${date(h['replaced'])} • ${h['technician']} • Qty ${h['quantity']}'), Text('Recorded cost: \$${((h['quantity'] as num) * (h['unit_cost'] as num)).toStringAsFixed(2)}'), Text(h['reason'] as String)])]);
+  Widget history() => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    const Padding(padding: EdgeInsets.fromLTRB(4, 0, 4, 14), child: Text('Completed work only. Location and cost are kept exactly as recorded at the time of the replacement.', style: TextStyle(color: Palette.muted))),
+    if (rows(state, 'history').isEmpty) const EmptyState('No completed maintenance recorded.', icon: Icons.history),
+    for (final h in rows(state, 'history')) panel(h['part'] as String, trailing: StatusPill(date(h['replaced']), tone: Tone.neutral, icon: Icons.event_outlined), [
+      Text(h['location_snapshot'] as String, style: const TextStyle(color: Palette.muted, fontWeight: FontWeight.w500)),
+      if (h['early'] == 1) const Padding(padding: EdgeInsets.only(top: 8), child: StatusPill('Early replacement')),
+      const SizedBox(height: 14),
+      FactGrid([Fact('Completed by', '${h['technician']}', width: factWidth), Fact('Quantity', '${h['quantity']}', width: factWidth), Fact('Recorded cost', '\$${((h['quantity'] as num) * (h['unit_cost'] as num)).toStringAsFixed(2)}', width: factWidth)]),
+      const SizedBox(height: 12),
+      labelled('Reason', h['reason'] as String),
+    ]),
+  ]);
   Widget administration() {
     if (!purchasingAllowed) return const Text('Lead or Administrator permission required.');
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -281,24 +420,33 @@ class _WorkspaceState extends State<Workspace> {
     final all = rows(state, 'reorders');
     final visible = all.where((r) => reorderFilter == 'All' || (reorderFilter == 'Active' ? ['Requested', 'Approved', 'Ordered', 'Partially received'].contains(r['state']) : r['state'] == reorderFilter)).toList();
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      panel('Reorders & deliveries', [
-        const Text('Lead requests are approved immediately. Administrator requests need another Lead or Administrator’s approval. Leads and Administrators record ordering, deliveries and cancellations.'),
-        const SizedBox(height: 14),
+      panel('Reorders & deliveries', subtitle: 'Lead requests are approved immediately. Administrator requests need another Lead or Administrator’s approval. Leads and Administrators record ordering, deliveries and cancellations.', [
         Wrap(spacing: 16, runSpacing: 12, children: [FilledButton.icon(onPressed: () => requestReorder(), icon: const Icon(Icons.add_shopping_cart), label: const Text('Request reorder')), SizedBox(width: 240, child: DropdownButtonFormField<String>(isExpanded: true, value: reorderFilter, decoration: const InputDecoration(labelText: 'Status'), items: ['Active', 'All', 'Requested', 'Approved', 'Ordered', 'Partially received', 'Received', 'Rejected', 'Cancelled'].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(), onChanged: (s) => setState(() => reorderFilter = s!)))]),
       ]),
-      if (visible.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('No reorders match this status.')),
+
+      if (visible.isEmpty) const EmptyState('No reorders match this status.', icon: Icons.local_shipping_outlined),
       for (final r in visible) panel('Reorder #${r['id']} · ${r['part']}', [
-        Wrap(spacing: 8, children: [pill(r['state'] as String), pill(r['sku'] as String)]),
-        Text('Requested ${r['quantity']} • Received ${r['received_quantity']} • ${r['state'] == 'Cancelled' ? 'Cancelled remainder' : 'Remaining'} ${(r['quantity'] as int) - (r['received_quantity'] as int)}'),
-        Text('Requester: ${r['requester']} • ${date(r['created'])}'),
-        Text('Supplier at request: ${(r['supplier_snapshot'] as String).isEmpty ? 'Not provided' : r['supplier_snapshot']} • Supplier part: ${r['supplier_number_snapshot']}'),
-        Text('Estimated order value: \$${((r['quantity'] as num) * (r['unit_cost_snapshot'] as num)).toStringAsFixed(2)} (snapshot at request; excludes freight/tax)'),
-        Text('Reason: ${r['reason']}'),
-        if (r['review_comment'] != null) Text('Review: ${r['review_comment']}'),
-        if (r['po_reference'] != null) Text('Order / PO reference: ${r['po_reference']}'),
-        if (r['cancellation_reason'] != null) Text('Cancellation: ${r['cancellation_reason']}'),
-        if (r['state'] == 'Requested' && r['requested_by'] == state['user']['id']) const Text('Another Lead or Administrator must review your request.'),
-        const SizedBox(height: 12),
+        Wrap(spacing: 8, runSpacing: 8, children: [pill(r['state'] as String), StatusPill(r['sku'] as String, tone: Tone.neutral, icon: Icons.qr_code_2)]),
+        const SizedBox(height: 16),
+        Text('${r['received_quantity']} of ${r['quantity']} received', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 6),
+        ClipRRect(borderRadius: BorderRadius.circular(99), child: LinearProgressIndicator(minHeight: 8, value: (r['quantity'] as int) == 0 ? 0 : (r['received_quantity'] as int) / (r['quantity'] as int), backgroundColor: Palette.neutralBg, color: r['state'] == 'Cancelled' ? Palette.muted : Palette.brand)),
+        const SizedBox(height: 16),
+        FactGrid([
+          Fact('Requested', '${r['quantity']}', width: factWidth),
+          Fact(r['state'] == 'Cancelled' ? 'Cancelled remainder' : 'Remaining', '${(r['quantity'] as int) - (r['received_quantity'] as int)}', width: factWidth),
+          Fact('Requester', '${r['requester']} · ${date(r['created'])}', width: factWidth),
+          Fact('Supplier at request', (r['supplier_snapshot'] as String).isEmpty ? 'Not provided' : r['supplier_snapshot'] as String, width: factWidth),
+          Fact('Supplier part', '${r['supplier_number_snapshot'] ?? ''}'.isEmpty ? '—' : '${r['supplier_number_snapshot']}', width: factWidth),
+          Fact('Est. value (excl. freight/tax)', '\$${((r['quantity'] as num) * (r['unit_cost_snapshot'] as num)).toStringAsFixed(2)}', width: factWidth),
+          if (r['po_reference'] != null) Fact('Order / PO reference', '${r['po_reference']}', width: factWidth),
+        ]),
+        const SizedBox(height: 14),
+        labelled('Reason', '${r['reason']}'),
+        if (r['review_comment'] != null) Padding(padding: const EdgeInsets.only(top: 6), child: Text('Review: ${r['review_comment']}', style: const TextStyle(color: Palette.muted))),
+        if (r['cancellation_reason'] != null) Padding(padding: const EdgeInsets.only(top: 6), child: labelled('Cancellation', '${r['cancellation_reason']}')),
+        if (r['state'] == 'Requested' && r['requested_by'] == state['user']['id']) const Padding(padding: EdgeInsets.only(top: 10), child: Notice('Another Lead or Administrator must review your request.', tone: Tone.warn)),
+        const SizedBox(height: 14),
         Wrap(spacing: 10, runSpacing: 8, children: [
           if (purchasingAllowed && r['state'] == 'Requested' && r['requested_by'] != state['user']['id']) ...[
             FilledButton(onPressed: () => reviewReorder(r, 'Approved'), child: const Text('Approve order')),
@@ -308,6 +456,7 @@ class _WorkspaceState extends State<Workspace> {
           if (purchasingAllowed && ['Ordered', 'Partially received'].contains(r['state'])) FilledButton(onPressed: () => receiveReorder(r), child: const Text('Receive delivery')),
           if (['Requested', 'Approved', 'Ordered', 'Partially received'].contains(r['state']) && purchasingAllowed) TextButton(onPressed: () => form('Cancel remaining order · #${r['id']}', 'reorder_cancel', [['reason', 'Required cancellation reason']], extra: {'reorder_id': r['id'], 'revision': r['revision']}, intro: 'Received stock is retained. The unreceived balance is cancelled. If already ordered, arrange cancellation with the supplier separately.'), child: const Text('Cancel remaining')),
         ]),
+        const Divider(height: 24),
         ExpansionTile(title: const Text('Delivery history'), children: [
           if (!rows(state, 'deliveries').any((d) => d['reorder_id'] == r['id'])) const ListTile(title: Text('No deliveries recorded.')),
           for (final d in rows(state, 'deliveries').where((d) => d['reorder_id'] == r['id'])) ListTile(title: Text('${d['delivery_reference']} • Qty ${d['quantity']}'), subtitle: Text('${date(d['received'])} • ${d['receiver']} • ${d['notes']}')),
@@ -350,17 +499,41 @@ class _WorkspaceState extends State<Workspace> {
     try { await widget.api.action('alert_ack', {'alert_id': id}); await refresh(); }
     catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(cleanError(e)))); }
   }
-  Widget alertsPanel() => panel('Persistent alerts', [
-    const Text('Acknowledging marks an alert as seen for you. It stays active until the condition clears. Background checks require the configured worker to be running.'),
-    DropdownButtonFormField<String>(value: alertFilter, decoration: const InputDecoration(labelText: 'Alert status'), items: ['Active', 'Unacknowledged', 'Resolved', 'All'].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(), onChanged: (v) => setState(() => alertFilter = v!)),
-    if (!rows(state, 'alerts').any((a) => alertFilter == 'All' || (alertFilter == 'Resolved' ? a['resolved'] != null : a['resolved'] == null && (alertFilter != 'Unacknowledged' || a['acknowledged'] == 0)))) const Padding(padding: EdgeInsets.all(16), child: Text('No alerts match this status.')),
-    for (final a in rows(state, 'alerts').where((a) => alertFilter == 'All' || (alertFilter == 'Resolved' ? a['resolved'] != null : a['resolved'] == null && (alertFilter != 'Unacknowledged' || a['acknowledged'] == 0)))) Card(child: ListTile(title: Text('${a['kind']} • ${a['resolved'] == null ? 'Active' : 'Resolved'}'), subtitle: Text('${a['message']}\nOpened ${date(a['opened'])}${a['resolved'] == null ? '' : ' • Resolved ${date(a['resolved'])}'}'), trailing: a['resolved'] != null ? const Icon(Icons.check_circle_outline) : a['acknowledged'] == 1 ? const Text('Seen') : TextButton(onPressed: () => acknowledgeAlert(a['id'] as int), child: const Text('Acknowledge')))),
+  bool alertVisible(Map<String, dynamic> a) => alertFilter == 'All' || (alertFilter == 'Resolved' ? a['resolved'] != null : a['resolved'] == null && (alertFilter != 'Unacknowledged' || a['acknowledged'] == 0));
+  Widget alertsPanel() => panel('Persistent alerts', subtitle: 'Acknowledging marks an alert as seen for you. It stays active until the condition clears. Background checks require the configured worker to be running.', [
+    SizedBox(width: 260, child: DropdownButtonFormField<String>(isExpanded: true, value: alertFilter, decoration: const InputDecoration(labelText: 'Alert status'), items: ['Active', 'Unacknowledged', 'Resolved', 'All'].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(), onChanged: (v) => setState(() => alertFilter = v!))),
+    const SizedBox(height: 12),
+    if (!rows(state, 'alerts').any(alertVisible)) const EmptyState('No alerts match this status.', icon: Icons.notifications_off_outlined),
+    for (final a in rows(state, 'alerts').where(alertVisible)) Card(color: a['resolved'] == null ? Colors.white : Palette.subtle, margin: const EdgeInsets.only(bottom: 10), child: ListTile(contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6), leading: Icon(a['resolved'] != null ? Icons.check_circle_outline : Icons.warning_amber_rounded, color: a['resolved'] != null ? Palette.okFg : Palette.warnFg), title: Text('${a['kind']} • ${a['resolved'] == null ? 'Active' : 'Resolved'}', style: const TextStyle(fontWeight: FontWeight.w700)), subtitle: Text('${a['message']}\nOpened ${date(a['opened'])}${a['resolved'] == null ? '' : ' • Resolved ${date(a['resolved'])}'}'), trailing: a['resolved'] != null ? null : a['acknowledged'] == 1 ? const StatusPill('Seen', tone: Tone.neutral, icon: Icons.visibility_outlined) : TextButton(onPressed: () => acknowledgeAlert(a['id'] as int), child: const Text('Acknowledge')))),
   ]);
-  Widget notifications() => Column(children: [alertsPanel(), const SizedBox(height: 16), const Text('Email delivery is optional and must be enabled by your administrator. In-app notifications remain available here.'), if (rows(state, 'notifications').isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('No notifications.')), for (final n in rows(state, 'notifications')) Card(child: ListTile(leading: const Icon(Icons.notifications_outlined), title: Text(n['message'] as String), subtitle: Text(date(n['created']))))]);
+  Widget notifications() => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [alertsPanel(), panel('Messages', subtitle: 'Email delivery is optional and must be enabled by your administrator. In-app notifications remain available here.', [if (rows(state, 'notifications').isEmpty) const EmptyState('No notifications.', icon: Icons.notifications_none), for (final n in rows(state, 'notifications')) ListTile(contentPadding: EdgeInsets.zero, leading: const CircleAvatar(radius: 18, backgroundColor: Palette.brandSoft, child: Icon(Icons.notifications_outlined, size: 18, color: Palette.brand)), title: Text(n['message'] as String), subtitle: Text(date(n['created'])))])]);
+  static const navGroups = [('Daily work', [0, 1, 2, 3, 6]), ('Records & purchasing', [7, 4, 9, 8, 10]), ('Setup', [5])];
+  bool visiblePage(int i) => ![5, 7, 8, 9].contains(i) || purchasingAllowed;
+  int? badgeFor(int i) {
+    final n = i == 3 ? rows(state, 'requests').where((r) => r['state'] == 'Pending').length : i == 6 ? rows(state, 'alerts').where((a) => a['resolved'] == null && a['acknowledged'] == 0).length : 0;
+    return n > 0 ? n : null;
+  }
   @override Widget build(BuildContext context) {
-    final content = loading && state.isEmpty ? const Center(child: CircularProgressIndicator()) : error != null ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(error!), TextButton(onPressed: refresh, child: const Text('Retry'))])) : SingleChildScrollView(padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 12 : 28), child: [overview, equipment, inventory, approvals, history, administration, notifications, reorders, auditLog, stockMovements, reportsPage][page]());
-    final nav = ListView(children: [const Padding(padding: EdgeInsets.all(24), child: Text('MachineCare', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800))), for (var i = 0; i < pages.length; i++) if ((i != 5 || purchasingAllowed) && (i != 7 || purchasingAllowed) && (i != 8 || purchasingAllowed) && (i != 9 || purchasingAllowed)) ListTile(selected: page == i, leading: Icon(icons[i]), title: Text(pages[i]), onTap: () { setState(() => page = i); if (MediaQuery.sizeOf(context).width < 900) Navigator.pop(context); }), const Divider(), const Padding(padding: EdgeInsets.all(20), child: Text('LOCAL WORKSPACE\nEquipment • Maintenance • Inventory', style: TextStyle(fontSize: 12)))]);
-    return LayoutBuilder(builder: (ctx, size) => Scaffold(appBar: AppBar(title: Text(pages[page]), actions: [if (size.maxWidth >= 700) Flexible(child: Text('${state['user']?['username'] ?? ''} • ${state['user']?['role'] ?? ''}', overflow: TextOverflow.ellipsis)), IconButton(tooltip: 'Refresh', onPressed: loading ? null : refresh, icon: const Icon(Icons.refresh)), IconButton(tooltip: 'Change password', onPressed: () async { if (await changePassword(context, widget.api) && context.mounted) Navigator.pop(context); }, icon: const Icon(Icons.password)), IconButton(tooltip: 'Sign out', onPressed: () async { try { await widget.api.action('logout', {}); } finally { widget.api.token = null; if (context.mounted) Navigator.pop(context); } }, icon: const Icon(Icons.logout))]), drawer: size.maxWidth < 900 ? Drawer(child: nav) : null, body: Column(children: [if (loading) const LinearProgressIndicator(), Expanded(child: Row(children: [if (size.maxWidth >= 900) SizedBox(width: 235, child: Material(color: Colors.white, child: nav)), Expanded(child: content)]))])));
+    final body = loading && state.isEmpty ? const Center(child: CircularProgressIndicator()) : error != null ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [Notice(error!, tone: Tone.danger), const SizedBox(height: 12), FilledButton.tonal(onPressed: refresh, child: const Text('Retry'))]))) : SingleChildScrollView(padding: EdgeInsets.all(compact ? 12 : 28), child: Align(alignment: Alignment.topCenter, child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 1180), child: [overview, equipment, inventory, approvals, history, administration, notifications, reorders, auditLog, stockMovements, reportsPage][page]())));
+    final user = state['user'] as Map? ?? {};
+    final nav = ListView(padding: const EdgeInsets.only(bottom: 16), children: [
+      Padding(padding: const EdgeInsets.fromLTRB(20, 22, 20, 14), child: Row(children: [
+        Container(padding: const EdgeInsets.all(7), decoration: BoxDecoration(color: Palette.brand, borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.precision_manufacturing_outlined, color: Colors.white, size: 22)),
+        const SizedBox(width: 12),
+        const Flexible(child: Text('MachineCare', style: TextStyle(fontSize: 21, fontWeight: FontWeight.w800, color: Palette.ink))),
+      ])),
+      for (final (label, items) in navGroups) if (items.any(visiblePage)) ...[
+        Padding(padding: const EdgeInsets.fromLTRB(22, 14, 16, 6), child: Text(label.toUpperCase(), style: const TextStyle(fontSize: 11.5, letterSpacing: 1, fontWeight: FontWeight.w700, color: Palette.muted))),
+        for (final i in items) if (visiblePage(i)) Padding(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1), child: ListTile(dense: true, visualDensity: const VisualDensity(vertical: -1), selected: page == i, leading: Icon(icons[i], size: 22), title: Text(pages[i], style: TextStyle(fontSize: 15, fontWeight: page == i ? FontWeight.w700 : FontWeight.w500)), trailing: badgeFor(i) == null ? null : CountBadge(badgeFor(i)!, tone: i == 6 ? Tone.danger : Tone.warn), onTap: () { setState(() => page = i); if (MediaQuery.sizeOf(context).width < 900) Navigator.pop(context); })),
+      ],
+      const Divider(height: 32),
+      Padding(padding: const EdgeInsets.symmetric(horizontal: 20), child: Row(children: [
+        CircleAvatar(radius: 18, backgroundColor: Palette.brandSoft, child: Text('${user['username'] ?? '?'}'.substring(0, 1).toUpperCase(), style: const TextStyle(color: Palette.brand, fontWeight: FontWeight.w700))),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('${user['username'] ?? ''}', overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.titleSmall), Text('${user['role'] ?? ''} · local workspace', overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall)])),
+      ])),
+    ]);
+    return LayoutBuilder(builder: (ctx, size) => Scaffold(appBar: AppBar(title: Text(pages[page]), actions: [if (size.maxWidth >= 700) Flexible(child: Padding(padding: const EdgeInsets.only(right: 8), child: Text('${state['user']?['username'] ?? ''} · ${state['user']?['role'] ?? ''}', overflow: TextOverflow.ellipsis, style: const TextStyle(color: Palette.muted, fontWeight: FontWeight.w600)))), IconButton(tooltip: 'Refresh', onPressed: loading ? null : refresh, icon: const Icon(Icons.refresh)), IconButton(tooltip: 'Change password', onPressed: () async { if (await changePassword(context, widget.api) && context.mounted) Navigator.pop(context); }, icon: const Icon(Icons.password)), IconButton(tooltip: 'Sign out', onPressed: () async { try { await widget.api.action('logout', {}); } finally { widget.api.token = null; if (context.mounted) Navigator.pop(context); } }, icon: const Icon(Icons.logout)), const SizedBox(width: 8)]), drawer: size.maxWidth < 900 ? Drawer(child: nav) : null, body: Column(children: [if (loading) const LinearProgressIndicator(minHeight: 3), Expanded(child: Row(children: [if (size.maxWidth >= 900) Container(width: 250, decoration: const BoxDecoration(color: Colors.white, border: Border(right: BorderSide(color: Palette.border))), child: nav), Expanded(child: body)]))])));
   }
 }
 
@@ -706,20 +879,20 @@ class _ReportExporterState extends State<ReportExporter> {
     } catch (e) { if (mounted) setState(() => error = cleanError(e)); }
     finally { if (mounted) setState(() => busy = false); }
   }
-  @override Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    Text('CSV reports', style: Theme.of(context).textTheme.headlineSmall),
+  @override Widget build(BuildContext context) => Card(child: Padding(padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 16 : 22), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    Text('CSV reports', style: Theme.of(context).textTheme.titleLarge),
     const SizedBox(height: 14),
-    const Text('Download maintenance history, current inventory or reorder history. Stock movement and audit exports are available on their respective screens. Exports contain all matches, up to 10,000 rows; narrow filters if the limit is exceeded.'),
+    const Text('Download maintenance history, current inventory or reorder history. Stock movement and audit exports are available on their respective screens. Exports contain all matches, up to 10,000 rows; narrow filters if the limit is exceeded.', style: TextStyle(color: Palette.muted)),
     const SizedBox(height: 18),
-    DropdownButtonFormField<String>(value: report, decoration: const InputDecoration(labelText: 'Report'), items: choices.map((r) => DropdownMenuItem(value: r, child: Text(r == 'maintenance' ? 'Maintenance history' : r == 'inventory' ? 'Current inventory' : 'Reorder history'))).toList(), onChanged: busy ? null : (r) => setState(() { report = r!; error = null; message = null; })),
+    DropdownButtonFormField<String>(isExpanded: true, value: report, decoration: const InputDecoration(labelText: 'Report'), items: choices.map((r) => DropdownMenuItem(value: r, child: Text(r == 'maintenance' ? 'Maintenance history' : r == 'inventory' ? 'Current inventory' : 'Reorder history'))).toList(), onChanged: busy ? null : (r) => setState(() { report = r!; error = null; message = null; })),
     const SizedBox(height: 14),
     TextField(controller: search, enabled: !busy, decoration: const InputDecoration(labelText: 'Search report records', hintText: 'Part, SKU, location, person or reason as applicable')),
     const SizedBox(height: 14),
-    if (report != 'inventory') Wrap(spacing: 12, children: [OutlinedButton(onPressed: busy ? null : () => date(true), child: Text(from == null ? 'From date (UTC)' : 'From ${day(from!)}')), OutlinedButton(onPressed: busy ? null : () => date(false), child: Text(to == null ? 'To date (UTC)' : 'To ${day(to!)}'))]),
+    if (report != 'inventory') Wrap(spacing: 12, runSpacing: 8, children: [OutlinedButton(onPressed: busy ? null : () => date(true), child: Text(from == null ? 'From date (UTC)' : 'From ${day(from!)}')), OutlinedButton(onPressed: busy ? null : () => date(false), child: Text(to == null ? 'To date (UTC)' : 'To ${day(to!)}'))]),
     if (report == 'inventory') const Text('Inventory is a current snapshot; date filters do not apply.'),
     const SizedBox(height: 14),
-    Wrap(spacing: 12, children: [FilledButton.icon(onPressed: busy ? null : export, icon: const Icon(Icons.download), label: Text(busy ? 'Preparing…' : 'Download CSV')), TextButton(onPressed: busy ? null : () => setState(() { search.clear(); from = null; to = null; error = null; message = null; }), child: const Text('Clear filters'))]),
+    Wrap(spacing: 12, runSpacing: 8, children: [FilledButton.icon(onPressed: busy ? null : export, icon: const Icon(Icons.download), label: Text(busy ? 'Preparing…' : 'Download CSV')), TextButton(onPressed: busy ? null : () => setState(() { search.clear(); from = null; to = null; error = null; message = null; }), child: const Text('Clear filters'))]),
     if (error != null) Text(error!, style: const TextStyle(color: Color(0xffb3261e))),
     if (message != null) Text(message!),
-  ]);
+  ])));
 }
