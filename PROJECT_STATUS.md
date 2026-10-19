@@ -1,5 +1,14 @@
 # MachineCare project status
 
+## Current checkpoint: final manager deck with real screenshots — 2026-10-19
+
+Added `docs/manager-presentation-2026-10-19/final/`. It contains a 21-slide editable PPTX with speaker notes, a PDF fallback, 14 real app screenshots and `WALKTHROUGH.md`, which has the slide-by-slide script and the production gap list. Generator: `docs/build_final_deck.js`. This replaces the graphical deck's "Screenshot capture pending" placeholders. Earlier decks are left unchanged.
+
+- Screenshots were taken in a cloud workspace from a release web build served on loopback. The backend ran against a disposable scratch database: repository sample structure, the DIMM/AOI importers, throwaway demo accounts and fictional workflow rows. The installed database was not present or used. No application code changed.
+- Actual checks (Linux, Python 3, Flutter 3.24.5): backend discovery **140 tests OK** (120 s); `flutter test` **45 passed**; `flutter analyze` **no issues**. `flutter build web --release --no-web-resources-cdn` passed, with the existing Cupertino-font warning.
+- Deck: package validation passed; every slide rendered with LibreOffice and visually inspected.
+- Still unverified: opening the deck in desktop PowerPoint, and signed-in Chrome/Excel CSV download on the laptop. Production gates are unchanged (see `docs/PRODUCTION_READINESS.md`).
+
 ## Current checkpoint: AOI / manager package — 2026-10-18 (Chicago)
 
 Prepared the 19 October manager deck. User supplied AOI references and confirmed
