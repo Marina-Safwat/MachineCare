@@ -9,6 +9,8 @@ Files in this folder:
 
 ## Where the screenshots came from
 
+The screenshots were recaptured on 19 October 2026 after the readability UI refresh (see `docs/ui-refresh-2026-10-19/`), so the deck shows the current design.
+
 The screenshots come from a release web build of the current app, served on loopback. The backend ran against a **disposable database** built only for the captures:
 
 - The repository's sample structure: 3 lines, DIMM/ACOS/conveyor.

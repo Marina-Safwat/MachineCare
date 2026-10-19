@@ -214,9 +214,9 @@ function demoTag(s, x, y, text = "Demo database · illustrative values") {
   screenshot(s, "overview", 0.7, 1.7, 7.6);
   demoTag(s, 8.85, 6.45);
   callouts(s, 8.85, 1.7, 3.85, "Start with what needs attention", [
-    ["Counters", "Machines, low-stock SKUs, pending approvals, spend, alerts, open reorders"],
-    ["Production status", "Operating, maintenance, stopped and retired at a glance"],
-    ["Stock needs attention", "Parts below threshold, with available versus threshold"],
+    ["Attention cards", "Turn amber or red when action is needed; click one to jump to that page"],
+    ["Production status", "Operating, maintenance, stopped and retired, each with colour and icon"],
+    ["Stock needs attention", "Parts at or below their reorder level, with a stock bar"],
   ]);
   s.addNotes("This is the landing page after sign-in. Point at the counters, then the production status chips, then the low-stock list. In the demo, the solenoid valve shows 8 available against a threshold of 10. These numbers come from the demo copy, not from real stock.");
 
@@ -236,9 +236,9 @@ function demoTag(s, x, y, text = "Demo database · illustrative values") {
   screenshot(s, "inventory", 0.7, 1.7, 7.6);
   demoTag(s, 8.85, 6.45);
   callouts(s, 8.85, 1.7, 3.85, "Every part shows", [
-    ["Physical · reserved · available", "Approved work reserves stock; availability never goes below zero"],
+    ["Physical · reserved · available", "Three clear tiles plus a bar marking the reorder level"],
     ["Real references kept", "Manufacturer, model or serial, and quantity per machine"],
-    ["Demo values flagged", "A tag marks stock, prices, bins and intervals as placeholders"],
+    ["Demo values flagged", "A blue tag marks stock, prices, bins and intervals as placeholders"],
   ]);
   s.addNotes("Example: the AOI control box shows VEVOR and the supplied serial number. The tag 'Demo stock / planning values' means the opening stock, $0 price, bin and 365-day interval are placeholders. Receive, adjust and reorder are available to leads and administrators; adjustments need a reason and cannot consume reserved stock.");
 
@@ -264,7 +264,7 @@ function demoTag(s, x, y, text = "Demo database · illustrative values") {
   s = content("Walkthrough 5 · Approvals", "Review early work before anyone records completion", "App walkthrough");
   screenshot(s, "approvals", 0.7, 1.7, 7.6);
   demoTag(s, 8.85, 6.45);
-  callouts(s, 8.85, 1.7, 3.85, "In this queue", [
+  callouts(s, 8.85, 1.7, 3.85, "Grouped by what to do next", [
     ["#6 Pending · early", "Finger cylinder: the technician's explanation is shown for the lead"],
     ["#5 Approved", "2 reed switches reserved; ready to record physical completion"],
     ["#4 Completed", "Locked; it now appears in History and Stock movements"],
