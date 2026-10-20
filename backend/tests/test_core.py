@@ -406,6 +406,12 @@ class WorkflowTests(unittest.TestCase):
         after=self.store.state(self.tokens['admin'])['parts']
         self.assertEqual([p['stock'] for p in after],[p['stock'] for p in before])
         self.assertEqual(self.store.state(self.tokens['admin'])['history'],[])
+    def test_reorders_carry_current_part_lead_time(self):
+        with self.store.tx() as db: db.execute('UPDATE parts SET lead_days=120 WHERE id=1')
+        r=self.reorder()
+        row=next(x for x in self.store.state(self.tokens['admin'])['reorders'] if x['id']==r['id'])
+        self.assertEqual(row['lead_days'],120)
+        self.assertEqual(next(p for p in self.store.state(self.tokens['admin'])['parts'] if p['id']==1)['lead_days'],120)
     def test_partial_and_final_deliveries_record_atomic_stock_and_identity(self):
         rid=self.order_ready()
         result=self.receive(rid,quantity=4,received_by=4)

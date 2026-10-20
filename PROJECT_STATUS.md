@@ -1,5 +1,23 @@
 # MachineCare project status
 
+## Current checkpoint: supplier lead time + budget comparison — 2026-10-20
+
+- **Lead time.** The existing `parts.lead_days` field is now visible and used. No schema change.
+  - Inventory shows a "Supplier lead time" fact in days, weeks or months.
+  - Parts with a lead time of 60 days or more get a "Long lead time" pill.
+  - The low-stock notice says when an order placed today would arrive.
+  - The overview stock list shows the lead time.
+  - The reorder request dialog shows the lead time and expected arrival.
+  - Reorder cards show the lead time, an expected arrival (order date + lead time) and a red "Delivery overdue" notice when an ordered delivery is past its estimate.
+  - `purchasing.snapshot` now returns `p.lead_days` on reorder rows.
+  - The part editor label explains days (e.g. 90 ≈ 3 months).
+- **Tests.** New backend test `test_reorders_carry_current_part_lead_time`. New `app/test/lead_time_test.dart` (3 tests). `flutter analyze`: no issues. `flutter test`: **48 passed**. Full backend suite: **141 tests OK** (287 s).
+- **Budget.** `docs/budget/MachineCare_Cost_Comparison.xlsx` is an editable model with 77 formulas and 0 errors after recalculation.
+  - Vendor inputs supplied by the user: $50/licence/month, 62 users, $10,000 installation.
+  - MachineCare inputs are explicitly labelled planning assumptions: $40/h labour, 160 h hardening, $8,000 security review, $1,200/yr hosting, 4 h/week support, 80 h data validation, 1 h training per user.
+  - Default result over 5 years: vendor $201,680 vs MachineCare $67,680.
+- **Deck.** Now 23 slides. Two budget slides were added before "The decision". The inventory, reorders and overview screenshots were recaptured with illustrative lead times in the disposable demo database. Package validation passed and the slides were rendered and inspected.
+
 ## Current checkpoint: readability / UI refresh — 2026-10-19
 
 Visual refresh of the existing Flutter UI. There is no framework, API, permission or backend change.

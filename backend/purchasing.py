@@ -26,7 +26,7 @@ def planning(db,part):
 
 def snapshot(db,u):
     if u['role'] not in ('Lead','Administrator'):return {'reorders':[],'deliveries':[]}
-    return {'reorders':[dict(r) for r in db.execute('SELECT r.*,p.name part,p.sku,u.username requester FROM reorders r JOIN parts p ON p.id=r.part_id JOIN users u ON u.id=r.requested_by ORDER BY r.id DESC')],
+    return {'reorders':[dict(r) for r in db.execute('SELECT r.*,p.name part,p.sku,p.lead_days,u.username requester FROM reorders r JOIN parts p ON p.id=r.part_id JOIN users u ON u.id=r.requested_by ORDER BY r.id DESC')],
             'deliveries':[dict(r) for r in db.execute('SELECT d.*,u.username receiver FROM reorder_deliveries d JOIN users u ON u.id=d.received_by ORDER BY d.id DESC')]}
 
 def admins(db,message,exclude=None):

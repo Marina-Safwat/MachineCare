@@ -6,6 +6,21 @@ import 'design.dart';
 
 String cleanError(Object e) => e.toString().replaceFirst('Exception: ', '');
 String date(dynamic value) => value == null ? 'Not recorded' : value.toString().split('T').first;
+/// Supplier lead time in words: "12 days", "~3 weeks", "~4 months (120 days)".
+String leadTimeText(dynamic days) {
+  final d = (days as num?)?.toInt() ?? 0;
+  if (d <= 0) return 'Not set';
+  if (d < 14) return '$d days';
+  if (d < 60) return '~${(d / 7).round()} weeks ($d days)';
+  final months = d / 30.4;
+  return '~${months.toStringAsFixed(months < 10 && months % 1 >= .25 && months % 1 < .75 ? 1 : 0)} months ($d days)';
+}
+const longLeadDays = 60;
+DateTime? arrivalEstimate(dynamic from, dynamic leadDays) {
+  final start = DateTime.tryParse('${from ?? ''}');
+  final d = (leadDays as num?)?.toInt() ?? 0;
+  return start == null || d <= 0 ? null : start.add(Duration(days: d));
+}
 List<Map<String, dynamic>> rows(Map<String, dynamic> s, String key) => (s[key] as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
 Future<bool> changePassword(BuildContext context, Api api) async {
   final old = TextEditingController(), next = TextEditingController();
@@ -141,7 +156,7 @@ class _WorkspaceState extends State<Workspace> {
         for (final p in low) Padding(padding: const EdgeInsets.only(bottom: 16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Padding(padding: EdgeInsets.only(top: 2, right: 10), child: Icon(Icons.warning_amber_rounded, color: Palette.warnFg)),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(p['name'] as String, style: Theme.of(context).textTheme.titleSmall), Text('${p['sku']} • ${p['bin']}', style: Theme.of(context).textTheme.bodySmall), Text('${p['available_quantity'] ?? p['stock']} available / ${p['threshold']} threshold', style: const TextStyle(fontWeight: FontWeight.w700, color: Palette.warnFg))])),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(p['name'] as String, style: Theme.of(context).textTheme.titleSmall), Text('${p['sku']} • ${p['bin']} • lead time ${leadTimeText(p['lead_days'])}', style: Theme.of(context).textTheme.bodySmall), Text('${p['available_quantity'] ?? p['stock']} available / ${p['threshold']} threshold', style: const TextStyle(fontWeight: FontWeight.w700, color: Palette.warnFg))])),
           ]),
           const SizedBox(height: 8),
           StockBar(available: (p['available_quantity'] ?? p['stock']) as num, threshold: p['threshold'] as num, target: p['target'] as num),
@@ -277,19 +292,19 @@ class _WorkspaceState extends State<Workspace> {
     final low = available <= (p['threshold'] as num);
     final provenance = p['provenance'] as Map?;
     return panel(p['name'] as String, [
-      Wrap(spacing: 8, runSpacing: 8, children: [StatusPill(p['sku'] as String, tone: Tone.neutral, icon: Icons.qr_code_2), if (low) const StatusPill('Low stock', tone: Tone.warn, icon: Icons.warning_amber_rounded), if (provenance != null) pill('Demo stock / planning values')]),
+      Wrap(spacing: 8, runSpacing: 8, children: [StatusPill(p['sku'] as String, tone: Tone.neutral, icon: Icons.qr_code_2), if (low) const StatusPill('Low stock', tone: Tone.warn, icon: Icons.warning_amber_rounded), if (((p['lead_days'] as num?) ?? 0) >= longLeadDays) const StatusPill('Long lead time', tone: Tone.info, icon: Icons.local_shipping_outlined), if (provenance != null) pill('Demo stock / planning values')]),
       const SizedBox(height: 16),
       Wrap(spacing: 10, runSpacing: 10, children: [stockStat('Physical', p['stock']), stockStat('Reserved', p['reserved_quantity'] ?? 0), stockStat('Available', available, tone: available <= 0 ? Tone.danger : low ? Tone.warn : Tone.ok)]),
       const SizedBox(height: 12),
       StockBar(available: available, threshold: p['threshold'] as num, target: p['target'] as num),
       const SizedBox(height: 6),
       Text('Reorder at ${p['threshold']} · target ${p['target']} · bar marks the reorder level', style: Theme.of(context).textTheme.bodySmall),
-      if (low) const Padding(padding: EdgeInsets.only(top: 12), child: Notice('Low stock: available is at or below the reorder threshold. Plan a reorder.', tone: Tone.warn, icon: Icons.warning_amber_rounded)),
+      if (low) Padding(padding: const EdgeInsets.only(top: 12), child: Notice(((p['lead_days'] as num?) ?? 0) > 0 ? 'Low stock: available is at or below the reorder threshold. Supplier lead time is ${leadTimeText(p['lead_days'])}, so an order placed today arrives around ${date(arrivalEstimate(DateTime.now().toIso8601String(), p['lead_days'])?.toIso8601String())}.' : 'Low stock: available is at or below the reorder threshold. Plan a reorder.', tone: Tone.warn, icon: Icons.warning_amber_rounded)),
       if ((p['reservation_shortfall'] ?? 0) > 0) Padding(padding: const EdgeInsets.only(top: 12), child: Notice('Reservation shortfall: ${p['reservation_shortfall']} units. Receive stock or cancel approved work.', tone: Tone.danger)),
       const SizedBox(height: 16),
       FactGrid([
         Fact('Bin', '${p['bin']}', width: factWidth), Fact('Unit cost', '\$${(p['cost'] as num).toStringAsFixed(2)}', width: factWidth),
-        Fact('Supplier', '${p['supplier'] ?? ''}'.isEmpty ? 'Not provided' : '${p['supplier']}', width: factWidth), Fact('Expected life', '${p['interval_days']} days', width: factWidth),
+        Fact('Supplier', '${p['supplier'] ?? ''}'.isEmpty ? 'Not provided' : '${p['supplier']}', width: factWidth), Fact('Supplier lead time', leadTimeText(p['lead_days']), width: factWidth), Fact('Expected life', '${p['interval_days']} days', width: factWidth),
         Fact('Suggested order', '${p['suggested_order_quantity'] ?? 0}', width: factWidth), Fact('On order', '${p['outstanding_order_quantity'] ?? 0}', width: factWidth), Fact('Pending requests', '${p['pending_reorder_quantity'] ?? 0}', width: factWidth),
       ]),
       if (provenance != null) Container(margin: const EdgeInsets.only(top: 16), padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: Palette.subtle, borderRadius: BorderRadius.circular(10), border: Border.all(color: Palette.border)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -440,7 +455,10 @@ class _WorkspaceState extends State<Workspace> {
           Fact('Supplier part', '${r['supplier_number_snapshot'] ?? ''}'.isEmpty ? '—' : '${r['supplier_number_snapshot']}', width: factWidth),
           Fact('Est. value (excl. freight/tax)', '\$${((r['quantity'] as num) * (r['unit_cost_snapshot'] as num)).toStringAsFixed(2)}', width: factWidth),
           if (r['po_reference'] != null) Fact('Order / PO reference', '${r['po_reference']}', width: factWidth),
+          Fact('Supplier lead time', leadTimeText(r['lead_days']), width: factWidth),
+          if (r['ordered'] != null && arrivalEstimate(r['ordered'], r['lead_days']) != null) Fact('Expected arrival (estimate)', date(arrivalEstimate(r['ordered'], r['lead_days'])!.toIso8601String()), width: factWidth),
         ]),
+        if (['Ordered', 'Partially received'].contains(r['state']) && (arrivalEstimate(r['ordered'], r['lead_days'])?.isBefore(DateTime.now()) ?? false)) Padding(padding: const EdgeInsets.only(top: 12), child: Notice('Delivery overdue by ${DateTime.now().difference(arrivalEstimate(r['ordered'], r['lead_days'])!).inDays} days against the supplier lead time. Follow up with the supplier.', tone: Tone.danger, icon: Icons.local_shipping_outlined)),
         const SizedBox(height: 14),
         labelled('Reason', '${r['reason']}'),
         if (r['review_comment'] != null) Padding(padding: const EdgeInsets.only(top: 6), child: Text('Review: ${r['review_comment']}', style: const TextStyle(color: Palette.muted))),
@@ -657,7 +675,7 @@ class _PartEditorState extends State<PartEditor> {
     'name': 'Part name', 'sku': 'Unique SKU', 'bin': 'Storage bin',
     'supplier': 'Supplier (optional)', 'supplier_number': 'Supplier part number (optional)',
     'cost': 'Unit cost', 'threshold': 'Reorder threshold', 'target': 'Target stock',
-    'lead_days': 'Supplier lead time (days)', 'interval_days': 'Expected replacement interval (days)',
+    'lead_days': 'Supplier lead time in days (e.g. 90 ≈ 3 months)', 'interval_days': 'Expected replacement interval (days)',
   };
   late Map<String, TextEditingController> controllers;
   late Set<int> selectedTypes;
@@ -842,6 +860,7 @@ class _ReorderRequestEditorState extends State<ReorderRequestEditor> {
     DropdownButtonFormField<int>(value: partId, isExpanded: true, decoration: const InputDecoration(labelText: 'Part'), items: widget.parts.map((p) => DropdownMenuItem<int>(value: p['id'] as int, child: Text('${p['name']} · ${p['sku']}', overflow: TextOverflow.ellipsis))).toList(), onChanged: busy ? null : (id) => setState(() { partId = id!; resetSuggestion(); })),
     const SizedBox(height: 14), Text('Stock ${part['stock']} • Available ${part['available_quantity'] ?? part['stock']} • Reserved ${part['reserved_quantity'] ?? 0} • Target ${part['target']} • Approved/ordered outstanding ${part['outstanding_order_quantity'] ?? 0} • Pending requests ${part['pending_reorder_quantity'] ?? 0}'),
     Text('Suggested quantity: ${part['suggested_order_quantity'] ?? 0}. You can request a different quantity with a reason.'),
+    Text('Supplier lead time: ${leadTimeText(part['lead_days'])}${((part['lead_days'] as num?) ?? 0) > 0 ? ' · if ordered today, expected around ${date(arrivalEstimate(DateTime.now().toIso8601String(), part['lead_days'])?.toIso8601String())}' : ''}', style: const TextStyle(fontWeight: FontWeight.w600)),
     const SizedBox(height: 14), TextField(controller: quantity, enabled: !busy, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Requested quantity')),
     const SizedBox(height: 14), TextField(controller: reason, enabled: !busy, decoration: const InputDecoration(labelText: 'Reorder reason')),
     const SizedBox(height: 14), const Text('Lead requests are approved immediately; Administrator requests need a separate Lead or Administrator’s approval. Physical deliveries add stock after ordering.'),

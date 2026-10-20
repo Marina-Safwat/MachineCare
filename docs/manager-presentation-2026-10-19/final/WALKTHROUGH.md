@@ -69,3 +69,10 @@ Supplier ordering stays manual (no ERP integration). SQLite is fine for the pilo
 - `flutter build web --release --no-web-resources-cdn`: passed. The existing Cupertino-font warning still appears.
 - PPTX package validation passed. Every slide was rendered through LibreOffice and inspected.
 - **Not verified:** opening the deck in desktop PowerPoint, and signed-in Chrome/Excel CSV download on the laptop. Rehearse both before the meeting.
+
+## Added 2026-10-20: lead time and budget slides
+
+- Inventory, Reorders and Overview screenshots now show supplier lead time. The demo lead times (100, 120, 90 and 45 days) are illustrative.
+- Slide 19, "MachineCare costs about a third of the outside system", is a 5-year cumulative comparison.
+- Slide 20, "Budget plan to run MachineCare here", lists the assumptions behind the MachineCare figures.
+- Both slides are driven by the same inputs as `docs/budget/MachineCare_Cost_Comparison.xlsx`. If you change the spreadsheet, also update the `B = {...}` inputs in `docs/build_final_deck.js` and rebuild.
