@@ -394,18 +394,18 @@ function demoTag(s, x, y, text = "Demo database · illustrative values") {
   s.addNotes("Suggested pilot measures: share of replacements recorded with full traceability, stock-count accuracy against a physical count for the pilot line, and operator feedback on usability. Agree these before promising savings or a launch date.");
 
 
-  // ---------- Cost comparison (inputs mirror docs/budget/MachineCare_Cost_Comparison.xlsx) ----------
-  const B = { licence: 50, users: 62, install: 10000, rate: 40, dataHrs: 80, trainHrs: 1, hardHrs: 160, secReview: 8000, hosting: 1200, supportHrs: 4 };
-  const shared = B.rate * (B.dataHrs + B.trainHrs * B.users);
-  const vendorYear = (y) => B.licence * B.users * 12 + (y === 1 ? B.install + shared : 0);
-  const inHouseOnce = B.rate * B.hardHrs + B.secReview;
-  const inHouseYear = (y) => B.hosting + B.supportHrs * 52 * B.rate + (y === 1 ? inHouseOnce + shared : 0);
-  const cum = (f) => [1, 2, 3, 4, 5].map((y) => [1, 2, 3, 4, 5].slice(0, y).reduce((a, k) => a + f(k), 0));
-  const vCum = cum(vendorYear), mCum = cum(inHouseYear);
+  // ---------- Budget: numbers come from docs/budget/budget_values.json (export of the xlsx) ----------
+  const BV = require(path.join(__dirname, "budget", "budget_values.json"));
   const usd = (n) => "$" + Math.round(n).toLocaleString("en-US");
-  const perUser = (B.hosting + B.supportHrs * 52 * B.rate) / B.users / 12;
+  const vT = BV.lines.vendor["Outside vendor total per year"], mT = BV.lines.machinecare["MachineCare total per year"];
+  const vCum = BV.lines.cumulative["Cumulative: outside vendor"], mCum = BV.lines.cumulative["Cumulative: MachineCare"];
+  const saving = vCum[4] - mCum[4];
+  const pu = BV.lines.per_user_month;
+  const inp = BV.inputs;
+  const rate = inp["Internal labour rate (loaded)"], users = inp["Users (licences needed)"];
+  const recV = Object.values(BV.lines.reconciliation)[0], recM = Object.values(BV.lines.reconciliation)[1];
 
-  s = content("Budget · 5-year view", "MachineCare costs about a third of the outside system", "Path to production");
+  s = content("Budget · 5-year view", "MachineCare costs less than a third of the outside system", "Path to production");
   s.addChart(pres.charts.BAR, [
     { name: "Outside vendor", labels: ["Year 1", "Year 2", "Year 3", "Year 4", "Year 5"], values: vCum },
     { name: "MachineCare (in-house)", labels: ["Year 1", "Year 2", "Year 3", "Year 4", "Year 5"], values: mCum },
@@ -416,9 +416,9 @@ function demoTag(s, x, y, text = "Demo database · illustrative values") {
     valAxisLabelFormatCode: "$#,##0,\"k\"", valAxisLabelColor: HEX.accent5, catAxisLabelColor: HEX.dk2, valAxisLabelFontSize: 11, catAxisLabelFontSize: 12,
     catAxisLabelFontFace: "+mn-lt", valAxisLabelFontFace: "+mn-lt",
     valGridLine: { color: "E3EAED", size: 0.75 }, catGridLine: { style: "none" } });
-  [["Outside vendor · 5 years", usd(vCum[4]), `$${B.licence}/user/month × ${B.users} users + ${usd(B.install)} installation`, C.accent4],
-   ["MachineCare · 5 years", usd(mCum[4]), "No licences: hosting, support time, one-time hardening and security review", C.accent1],
-   ["Saving over 5 years", usd(vCum[4] - mCum[4]), `Running cost ≈ $${perUser.toFixed(0)} vs $${B.licence} per user per month`, C.text2]]
+  [["Outside vendor · 5 years", usd(vCum[4]), `Year 1 ${usd(vT.years[0])}, then ${usd(vT.years[1])} a year`, C.accent4],
+   ["MachineCare · 5 years", usd(mCum[4]), `Year 1 ${usd(mT.years[0])}, then ${usd(mT.years[1])} a year`, C.accent1],
+   ["Saving over 5 years", usd(saving), `Running cost ≈ $${pu["MachineCare"].toFixed(0)} vs $${pu["Outside vendor"].toFixed(0)} per user per month`, C.text2]]
     .forEach(([h, v, sub, col], i) => {
       const y = 1.65 + i * 1.68;
       card(s, 8.5, y, 4.2, 1.5);
@@ -426,39 +426,55 @@ function demoTag(s, x, y, text = "Demo database · illustrative values") {
       s.addText(v, { x: 8.75, y: y + 0.42, w: 3.8, h: 0.55, fontSize: 28, bold: true, color: col, margin: 0, isTextBox: true });
       s.addText(sub, { x: 8.75, y: y + 0.97, w: 3.8, h: 0.45, fontSize: 11, color: C.accent5, margin: 0, isTextBox: true });
     });
-  s.addText("Vendor figures: the quote received. MachineCare figures: planning assumptions (next slide), editable in docs/budget/MachineCare_Cost_Comparison.xlsx.",
+  s.addText("Vendor: the quote received. Internal work on both sides at $" + rate + "/h, including our in-house security team. Full model: docs/budget/MachineCare_Cost_Comparison.xlsx.",
     { x: 0.6, y: 6.68, w: 12.1, h: 0.3, fontSize: 10, italic: true, color: C.accent5, margin: 0, isTextBox: true });
-  s.addNotes(`Outside vendor: ${B.users} licences at $${B.licence} per user per month is ${usd(B.licence * B.users * 12)} a year, plus the ${usd(B.install)} one-time installation. Year 1 is ${usd(vendorYear(1))} including ${usd(shared)} of our own time for stock counts and training, which we need with either option. Five-year total ${usd(vCum[4])}. MachineCare: no licence fees. Year 1 is ${usd(inHouseYear(1))} (hardening, deployment and an independent security review, plus the same data and training effort); then about ${usd(inHouseYear(2))} a year for hosting and an internal owner's support time. Five-year total ${usd(mCum[4])}, a saving of about ${usd(vCum[4] - mCum[4])}. The vendor price includes their support and updates; with MachineCare we carry that responsibility ourselves, which is why support hours are budgeted every year. Replace the yellow assumptions in the spreadsheet with our real labour rate and quotes before approval.`);
+  s.addNotes(`Five-year cost: outside vendor ${usd(vCum[4])}, MachineCare ${usd(mCum[4])}, a saving of ${usd(saving)}. Year 1: vendor ${usd(vT.years[0])} (licences ${usd(users * inp["Licence price"] * 12)}, the ${usd(inp["One-time installation fee"])} installation, and our own data, training, security and admin time); MachineCare ${usd(mT.years[0])}. Each later year: vendor ${usd(vT.years[1])}, MachineCare ${usd(mT.years[1])}. Both options include the same stock count, training and in-house security review effort, so the difference is mainly licences versus our own support time.`);
 
-  s = content("Budget · what MachineCare needs", "Budget plan to run MachineCare here", "Path to production");
-  const brow = (a, b, c, d) => [a, b, c, d];
-  const budget = [
-    brow("Item", "Basis (assumption)", "Year 1", "Each later year"),
-    brow("Production hardening & deployment", `${B.hardHrs} h × $${B.rate}/h`, usd(B.rate * B.hardHrs), "—"),
-    brow("Independent security review", "External quote needed", usd(B.secReview), "—"),
-    brow("Stock count & data validation", `${B.dataHrs} h × $${B.rate}/h (needed with either option)`, usd(B.rate * B.dataHrs), "—"),
-    brow("Training", `${B.users} people × ${B.trainHrs} h × $${B.rate}/h (either option)`, usd(B.rate * B.trainHrs * B.users), "—"),
-    brow("Server / VM hosting & backup storage", "Small internal VM + off-host backups", usd(B.hosting), usd(B.hosting)),
-    brow("Support, patching & small changes", `${B.supportHrs} h/week × 52 × $${B.rate}/h`, usd(B.supportHrs * 52 * B.rate), usd(B.supportHrs * 52 * B.rate)),
-    brow("Licences", `0 × ${B.users} users`, "$0", "$0"),
-    brow("Total", "", usd(inHouseYear(1)), usd(inHouseYear(2))),
-  ];
-  s.addTable(budget.map((r, i) => r.map((c, j) => ({ text: c, options: {
-    bold: i === 0 || i === budget.length - 1 || j === 0, color: i === 0 ? HEX.lt1 : HEX.dk1,
-    fill: { color: i === 0 ? HEX.dk2 : i === budget.length - 1 ? "E1F2EF" : (i % 2 ? "FFFFFF" : "F5F9FA") },
-    align: j >= 2 ? "right" : "left", fontSize: 13, valign: "middle" } }))),
-    { x: 0.6, y: 1.65, w: 8.1, colW: [2.9, 2.9, 1.15, 1.15], rowH: 0.5, border: { type: "solid", color: "D5E0E3", pt: 0.75 }, margin: [0.03, 0.08, 0.03, 0.08] });
-  card(s, 9.0, 1.65, 3.7, 4.5);
-  s.addText("Before approval", { x: 9.25, y: 1.85, w: 3.3, h: 0.4, fontSize: 17, bold: true, color: C.accent1, margin: 0, isTextBox: true });
+  s = content("Budget · side by side", "Side-by-side budget: where every dollar goes", "Path to production");
+  const cats = BV.categories;
+  const head = ["Category", "Vendor\nYear 1", "Vendor\nYear 2+", "Vendor\n5 years", "MachineCare\nYear 1", "MachineCare\nYear 2+", "MachineCare\n5 years"];
+  const body = cats.map((c) => [c.category, usd(c.vendor_y1), usd(c.vendor_later), usd(c.vendor_5y), usd(c.mc_y1), usd(c.mc_later), usd(c.mc_5y)]);
+  const trows = [head, ...body];
+  s.addTable(trows.map((r, i) => r.map((c, j) => ({ text: c === "$0" ? "—" : c, options: {
+    bold: i === 0 || i === trows.length - 1 || j === 0,
+    color: i === 0 ? HEX.lt1 : (j >= 1 && j <= 3 && i > 0 ? HEX.accent4 : j >= 4 && i > 0 ? HEX.accent1 : HEX.dk1),
+    fill: { color: i === 0 ? (j === 0 ? HEX.dk2 : j <= 3 ? "8A2E0A" : "0B5A51") : i === trows.length - 1 ? "E1F2EF" : (i % 2 ? "FFFFFF" : "F5F9FA") },
+    align: j ? "right" : "left", fontSize: 13, valign: "middle" } }))),
+    { x: 0.6, y: 1.6, w: 12.1, colW: [3.4, 1.45, 1.45, 1.45, 1.45, 1.45, 1.45], rowH: [0.62, ...body.map(() => 0.44)], border: { type: "solid", color: "D5E0E3", pt: 0.75 }, margin: [0.03, 0.08, 0.03, 0.08] });
   s.addText([
-    { text: "Replace the $40/h rate with our real loaded labour cost", options: { bullet: true, breakLine: true } },
-    { text: "Get a real quote for the security review and hosting", options: { bullet: true, breakLine: true } },
-    { text: "Name one internal owner for support (the vendor price includes theirs)", options: { bullet: true, breakLine: true } },
-    { text: "Confirm the vendor quote covers updates, support and data migration", options: { bullet: true } },
-  ], { x: 9.25, y: 2.35, w: 3.3, h: 3.6, fontSize: 13, color: C.accent5, paraSpaceAfter: 8, margin: 0, valign: "top", isTextBox: true });
-  s.addText("All MachineCare amounts are planning assumptions, not quotes. Editable model: docs/budget/MachineCare_Cost_Comparison.xlsx.",
-    { x: 0.6, y: 6.68, w: 12.1, h: 0.3, fontSize: 10, italic: true, color: C.accent5, margin: 0, isTextBox: true });
-  s.addNotes(`Year 1 for MachineCare is ${usd(inHouseYear(1))}; each later year about ${usd(inHouseYear(2))}. The biggest unknowns are our internal hourly rate and the security review quote. Stock counting and training are needed whichever system we choose, so they appear in both totals. The main trade-off: a vendor provides support and updates; with MachineCare an internal owner does, which is budgeted at ${B.supportHrs} hours a week.`);
+    { text: "Security is done by our own security team on both sides: ", options: { bold: true, color: C.text2 } },
+    { text: `${inp["MachineCare initial security review"]} h initial review + ${inp["Yearly security re-check, MachineCare (years 2–5)"]} h a year. Data preparation and training are needed with either option, so they cancel out. The real difference is licences vs our own setup, hosting and support time.`, options: { color: C.accent5 } },
+  ], { x: 0.6, y: 6.1, w: 12.1, h: 0.55, fontSize: 12, margin: 0, valign: "top", isTextBox: true });
+  s.addText("Every individual cost line, year by year: appendix C and the Comparison sheet of the budget workbook.",
+    { x: 0.6, y: 6.75, w: 12.1, h: 0.25, fontSize: 10, italic: true, color: C.accent5, margin: 0, isTextBox: true });
+  s.addNotes("Walk the rows top to bottom. Licences and fees are the vendor's main cost. MachineCare's are setup and deployment (one-time) plus hosting and support (every year). Security, data preparation and training are the same on both sides.");
+
+  s = content("Budget · assumptions", "What the numbers are based on", "Path to production");
+  card(s, 0.6, 1.65, 5.95, 4.95);
+  s.addText("From your spreadsheet", { x: 0.9, y: 1.85, w: 5.4, h: 0.4, fontSize: 18, bold: true, color: C.accent1, margin: 0, isTextBox: true });
+  s.addText([
+    { text: `Vendor: $${inp["Licence price"]}/user/month × ${users} users, ${usd(inp["One-time installation fee"])} installation`, options: { bullet: true, breakLine: true } },
+    { text: `Internal labour: $${rate}/hour`, options: { bullet: true, breakLine: true } },
+    { text: `Security review by our in-house team: ${inp["MachineCare initial security review"]} h (${usd(inp["MachineCare initial security review"] * rate)})`, options: { bullet: true, breakLine: true } },
+    { text: `MachineCare setup: 160 h (runtime 24, server & HTTPS 40, company sign-in 40, monitoring & backups 24, acceptance testing 32)`, options: { bullet: true, breakLine: true } },
+    { text: `Data preparation 80 h; training ${inp["Training per user"]} h per person`, options: { bullet: true, breakLine: true } },
+    { text: `Hosting & backup storage $1,200/yr; support 4 h/week`, options: { bullet: true } },
+  ], { x: 0.9, y: 2.35, w: 5.4, h: 4.1, fontSize: 13, color: C.text1, paraSpaceAfter: 6, margin: 0, valign: "top", isTextBox: true });
+  card(s, 6.75, 1.65, 5.95, 4.95);
+  s.addText("Added for a fair comparison", { x: 7.05, y: 1.85, w: 5.4, h: 0.4, fontSize: 18, bold: true, color: "8A5A00", margin: 0, isTextBox: true });
+  s.addText([
+    { text: `Our security team also reviews the vendor system: ${inp["Vendor system initial security review"]} h, then ${inp["Yearly security re-check, vendor (years 2–5)"]} h a year`, options: { bullet: true, breakLine: true } },
+    { text: `Yearly MachineCare security re-check: ${inp["Yearly security re-check, MachineCare (years 2–5)"]} h a year`, options: { bullet: true, breakLine: true } },
+    { text: `Someone still administers the vendor system: ${inp["Vendor system administration (internal)"]} h/week`, options: { bullet: true, breakLine: true } },
+    { text: `Vendor price increase: ${(inp["Yearly licence price increase"] * 100).toFixed(0)}% a year (ask the vendor)`, options: { bullet: true } },
+  ], { x: 7.05, y: 2.35, w: 5.4, h: 2.4, fontSize: 13, color: C.text1, paraSpaceAfter: 6, margin: 0, valign: "top", isTextBox: true });
+  s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 7.05, y: 4.95, w: 5.35, h: 1.4, rectRadius: 0.08, fill: { color: "FFF4DC" }, line: { type: "none" } });
+  s.addText([{ text: "Without the added lines (your sheet exactly):", options: { bold: true, color: "7A4B00", breakLine: true } },
+    { text: `Vendor ${usd(recV)} vs MachineCare ${usd(recM)} over 5 years, a saving of ${usd(recV - recM)}.`, options: { color: "7A4B00" } }],
+    { x: 7.3, y: 5.05, w: 4.9, h: 1.2, fontSize: 13, margin: 0, valign: "middle", isTextBox: true });
+  s.addText("Change any blue cell on the Inputs sheet; all totals recalculate. Re-export to update these slides.",
+    { x: 0.6, y: 6.75, w: 12.1, h: 0.25, fontSize: 10, italic: true, color: C.accent5, margin: 0, isTextBox: true });
+  s.addNotes(`Left: numbers from the spreadsheet you supplied. Right: realistic costs I added so the comparison covers everything. Each can be set to zero, and without them the totals are exactly your sheet: vendor ${usd(recV)}, MachineCare ${usd(recM)}. The conclusion does not depend on them.`);
 
   // ---------- 19. Ask ----------
   s = pres.addSlide({ masterName: "DARK", sectionTitle: "Path to production" });
@@ -495,6 +511,20 @@ function demoTag(s, x, y, text = "Demo database · illustrative values") {
     ["PLC PNOZ m bo.1", "PILZ", "Ident-772104", "1"], ["Tower light", "Unknown", "ASTLF-110-4-5FT-CM", "2"], ["Switching power supply", "Unknown", "s-120-24", "1"], ["Control box", "VEVOR", "Serial 240108586510146", "1"]],
     "Identifiers kept verbatim pending nameplate confirmation. Catalog entries for safety components are not an inspection or certification.");
 
+  {
+    const a = content("Appendix C", "Every cost line, both options", "Appendix");
+    const side = (title, lines, x, colorHead) => {
+      const rows = [[title, "Year 1", "5 years"], ...Object.entries(lines).map(([k, v]) => [k.replace(/^(Outside vendor|MachineCare) total per year$/, "Total"), usd(v.years[0]), usd(v.total)])];
+      a.addTable(rows.map((r, i) => r.map((c, j) => ({ text: c === "$0" ? "—" : c, options: {
+        bold: i === 0 || i === rows.length - 1, color: i === 0 ? HEX.lt1 : HEX.dk1,
+        fill: { color: i === 0 ? colorHead : i === rows.length - 1 ? "E1F2EF" : (i % 2 ? "FFFFFF" : "F5F9FA") },
+        align: j ? "right" : "left", fontSize: 10, valign: "middle" } }))),
+        { x, y: 1.5, w: 5.95, colW: [3.75, 1.1, 1.1], rowH: 0.262, border: { type: "solid", color: "D5E0E3", pt: 0.5 }, margin: [0.01, 0.06, 0.01, 0.06] });
+    };
+    side("Outside vendor", BV.lines.vendor, 0.6, "8A2E0A");
+    side("MachineCare (in-house)", BV.lines.machinecare, 6.75, "0B5A51");
+    a.addNotes("Reference only. The Comparison sheet in docs/budget/MachineCare_Cost_Comparison.xlsx shows each line for every year.");
+  }
   const file = path.join(OUT, "MachineCare_Manager_Review_Final.pptx");
   await pres.writeFile({ fileName: file });
   if (APPLY_THEME) await require(APPLY_THEME).applyTheme(file, THEME);

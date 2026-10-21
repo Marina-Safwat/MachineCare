@@ -1,0 +1,488 @@
+{
+ "inputs": {
+  "Users (licences needed)": 62,
+  "Internal labour rate (loaded)": 40,
+  "Licence price": 50,
+  "One-time installation fee": 10000,
+  "Yearly licence price increase": 0,
+  "Vendor system administration (internal)": 1,
+  "MachineCare initial security review": 20,
+  "Vendor system initial security review": 20,
+  "Yearly security re-check, MachineCare (years 2\u20135)": 8,
+  "Yearly security re-check, vendor (years 2\u20135)": 8,
+  "Physical stock count": 40,
+  "Bins, prices and supplier details": 20,
+  "Lead times and maintenance intervals": 20,
+  "Training per user": 1,
+  "Upgrade to a supported Python/Flutter and re-test": 24,
+  "Production server, HTTPS and deployment": 40,
+  "Company sign-in (SSO) and account setup": 40,
+  "Monitoring and scheduled backups": 24,
+  "User acceptance testing with each role": 32,
+  "Server / VM hosting": 900,
+  "Off-host backup storage": 300,
+  "Patching and monitoring": 1.5,
+  "User help and fixes": 1.5,
+  "Small changes and improvements": 1
+ },
+ "lines": {
+  "vendor": {
+   "Licences": {
+    "basis": "users \u00d7 price \u00d7 12 (+ yearly increase)",
+    "years": [
+     37200,
+     37200,
+     37200,
+     37200,
+     37200
+    ],
+    "total": 186000
+   },
+   "Installation fee": {
+    "basis": "One-time, vendor quote",
+    "years": [
+     10000,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 10000
+   },
+   "Setup and deployment": {
+    "basis": "Included in installation fee",
+    "years": [
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 0
+   },
+   "Security review (in-house team)": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     800,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 800
+   },
+   "Yearly security re-check": {
+    "basis": "hours/yr \u00d7 rate (yrs 2\u20135)",
+    "years": [
+     0,
+     320,
+     320,
+     320,
+     320
+    ],
+    "total": 1280
+   },
+   "Physical stock count": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     1600,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 1600
+   },
+   "Bins, prices and supplier details": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     800,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 800
+   },
+   "Lead times and maintenance intervals": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     800,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 800
+   },
+   "Training": {
+    "basis": "users \u00d7 hours \u00d7 rate",
+    "years": [
+     2480,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 2480
+   },
+   "Hosting and backups": {
+    "basis": "Included in subscription",
+    "years": [
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 0
+   },
+   "System administration (internal)": {
+    "basis": "hours/week \u00d7 52 \u00d7 rate",
+    "years": [
+     2080,
+     2080,
+     2080,
+     2080,
+     2080
+    ],
+    "total": 10400
+   },
+   "Outside vendor total per year": {
+    "basis": null,
+    "years": [
+     55760,
+     39600,
+     39600,
+     39600,
+     39600
+    ],
+    "total": 214160
+   }
+  },
+  "machinecare": {
+   "Licences": {
+    "basis": "None: built in-house",
+    "years": [
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 0
+   },
+   "Installation fee": {
+    "basis": "None",
+    "years": [
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 0
+   },
+   "Runtime upgrade and re-test": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     960,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 960
+   },
+   "Production server, HTTPS and deployment": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     1600,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 1600
+   },
+   "Company sign-in (SSO)": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     1600,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 1600
+   },
+   "Monitoring and scheduled backups": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     960,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 960
+   },
+   "User acceptance testing": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     1280,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 1280
+   },
+   "Security review (in-house team)": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     800,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 800
+   },
+   "Yearly security re-check": {
+    "basis": "hours/yr \u00d7 rate (yrs 2\u20135)",
+    "years": [
+     0,
+     320,
+     320,
+     320,
+     320
+    ],
+    "total": 1280
+   },
+   "Physical stock count": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     1600,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 1600
+   },
+   "Bins, prices and supplier details": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     800,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 800
+   },
+   "Lead times and maintenance intervals": {
+    "basis": "hours \u00d7 rate",
+    "years": [
+     800,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 800
+   },
+   "Training": {
+    "basis": "users \u00d7 hours \u00d7 rate",
+    "years": [
+     2480,
+     0,
+     0,
+     0,
+     0
+    ],
+    "total": 2480
+   },
+   "Server / VM hosting": {
+    "basis": "$ per year",
+    "years": [
+     900,
+     900,
+     900,
+     900,
+     900
+    ],
+    "total": 4500
+   },
+   "Off-host backup storage": {
+    "basis": "$ per year",
+    "years": [
+     300,
+     300,
+     300,
+     300,
+     300
+    ],
+    "total": 1500
+   },
+   "Patching and monitoring": {
+    "basis": "hours/week \u00d7 52 \u00d7 rate",
+    "years": [
+     3120,
+     3120,
+     3120,
+     3120,
+     3120
+    ],
+    "total": 15600
+   },
+   "User help and fixes": {
+    "basis": "hours/week \u00d7 52 \u00d7 rate",
+    "years": [
+     3120,
+     3120,
+     3120,
+     3120,
+     3120
+    ],
+    "total": 15600
+   },
+   "Small changes and improvements": {
+    "basis": "hours/week \u00d7 52 \u00d7 rate",
+    "years": [
+     2080,
+     2080,
+     2080,
+     2080,
+     2080
+    ],
+    "total": 10400
+   },
+   "MachineCare total per year": {
+    "basis": null,
+    "years": [
+     22400,
+     9840,
+     9840,
+     9840,
+     9840
+    ],
+    "total": 61760
+   }
+  },
+  "cumulative": {
+   "Cumulative: outside vendor": [
+    55760,
+    95360,
+    134960,
+    174560,
+    214160
+   ],
+   "Cumulative: MachineCare": [
+    22400,
+    32240,
+    42080,
+    51920,
+    61760
+   ],
+   "Cumulative saving with MachineCare": [
+    33360,
+    63120,
+    92880,
+    122640,
+    152400
+   ]
+  },
+  "per_user_month": {
+   "Outside vendor": 53.2258064516129,
+   "MachineCare": 13.2258064516129
+  },
+  "reconciliation": {
+   "Vendor 5-year total without added lines (security, re-checks, admin)": 201680,
+   "MachineCare 5-year total without added line (yearly re-check)": 60480
+  }
+ },
+ "categories": [
+  {
+   "category": "Licences and fees",
+   "vendor_y1": 47200,
+   "vendor_later": 37200,
+   "vendor_5y": 196000,
+   "mc_y1": 0,
+   "mc_later": 0,
+   "mc_5y": 0,
+   "difference": 196000
+  },
+  {
+   "category": "Setup and deployment",
+   "vendor_y1": 0,
+   "vendor_later": 0,
+   "vendor_5y": 0,
+   "mc_y1": 6400,
+   "mc_later": 0,
+   "mc_5y": 6400,
+   "difference": -6400
+  },
+  {
+   "category": "Security (in-house team)",
+   "vendor_y1": 800,
+   "vendor_later": 320,
+   "vendor_5y": 2080,
+   "mc_y1": 800,
+   "mc_later": 320,
+   "mc_5y": 2080,
+   "difference": 0
+  },
+  {
+   "category": "Data preparation",
+   "vendor_y1": 3200,
+   "vendor_later": 0,
+   "vendor_5y": 3200,
+   "mc_y1": 3200,
+   "mc_later": 0,
+   "mc_5y": 3200,
+   "difference": 0
+  },
+  {
+   "category": "Training",
+   "vendor_y1": 2480,
+   "vendor_later": 0,
+   "vendor_5y": 2480,
+   "mc_y1": 2480,
+   "mc_later": 0,
+   "mc_5y": 2480,
+   "difference": 0
+  },
+  {
+   "category": "Hosting and backups",
+   "vendor_y1": 0,
+   "vendor_later": 0,
+   "vendor_5y": 0,
+   "mc_y1": 1200,
+   "mc_later": 1200,
+   "mc_5y": 6000,
+   "difference": -6000
+  },
+  {
+   "category": "Running, support and administration",
+   "vendor_y1": 2080,
+   "vendor_later": 2080,
+   "vendor_5y": 10400,
+   "mc_y1": 8320,
+   "mc_later": 8320,
+   "mc_5y": 41600,
+   "difference": -31200
+  },
+  {
+   "category": "Total",
+   "vendor_y1": 55760,
+   "vendor_later": 39600,
+   "vendor_5y": 214160,
+   "mc_y1": 22400,
+   "mc_later": 9840,
+   "mc_5y": 61760,
+   "difference": 152400
+  }
+ ]
+}

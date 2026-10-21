@@ -1,5 +1,16 @@
 # MachineCare project status
 
+## Current checkpoint: detailed budget comparison — 2026-10-21
+
+- **New budget model.** Rebuilt `docs/budget/MachineCare_Cost_Comparison.xlsx` from the user's revised sheet. The only value change was the security review, from $8,000 to $800. The user confirmed security is done by the in-house team, so it is modelled as 20 h × $40.
+  - Sheets: Inputs, Budget detail (side by side by category), and Comparison (every line, every year, cumulative, per user, reconciliation).
+  - The user's totals were split into detailed sub-lines that sum to the same amounts.
+  - Added yellow assumptions for a fair comparison: vendor security review 20 h + 8 h/yr, MachineCare yearly re-check 8 h, vendor admin 1 h/week, price increase 0%.
+  - Result: 5-year vendor $214,160 vs MachineCare $61,760. Without the added lines it is exactly the user's sheet: $201,680 vs $60,480.
+  - Recalculation: 263 formulas, 0 errors. Totals hand-checked. Built-in check cells are 0.
+- **Single source of truth.** New `docs/budget/export_budget.py` writes `budget_values.json` from the saved workbook, and `build_final_deck.js` reads it.
+- **Deck.** Now 25 slides: budget slides 19–21 plus appendix C (every cost line). Package validation passed; budget slides rendered and inspected.
+
 ## Current checkpoint: supplier lead time + budget comparison — 2026-10-20
 
 - **Lead time.** The existing `parts.lead_days` field is now visible and used. No schema change.

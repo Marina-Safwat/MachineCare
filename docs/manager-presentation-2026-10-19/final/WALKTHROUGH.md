@@ -76,3 +76,15 @@ Supplier ordering stays manual (no ERP integration). SQLite is fine for the pilo
 - Slide 19, "MachineCare costs about a third of the outside system", is a 5-year cumulative comparison.
 - Slide 20, "Budget plan to run MachineCare here", lists the assumptions behind the MachineCare figures.
 - Both slides are driven by the same inputs as `docs/budget/MachineCare_Cost_Comparison.xlsx`. If you change the spreadsheet, also update the `B = {...}` inputs in `docs/build_final_deck.js` and rebuild.
+
+## Updated 2026-10-21: detailed budget from the revised spreadsheet
+
+- The security review is done by the in-house security team: 20 h × $40 = $800, matching the user's sheet. It applies to both options.
+- Slide 19 shows the 5-year comparison chart.
+- Slide 20 shows the side-by-side budget by category: vendor vs MachineCare, Year 1, each later year and 5 years.
+- Slide 21 shows the assumptions: values from the user's sheet vs lines added for a fair comparison. With the added lines set to 0, the reconciliation gives exactly the sheet's figures.
+- Appendix C lists every cost line for both options.
+- **Single source of truth:** `docs/budget/MachineCare_Cost_Comparison.xlsx`. To update the slides:
+  1. Edit the blue cells and save in Excel.
+  2. Run `python docs/budget/export_budget.py`.
+  3. Run `node docs/build_final_deck.js`.
